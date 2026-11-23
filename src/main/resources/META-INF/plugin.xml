@@ -1,0 +1,22 @@
+<idea-plugin>
+    <id>twigblocktree</id>
+    <name>Twig Block Tree</name>
+    <vendor>local</vendor>
+
+    <description><![CDATA[
+    Shows the Twig block structure around the caret, like the built-in HTML tag tree highlighting:
+    <ul>
+      <li>a colored bar in the gutter for each enclosing Twig block ({% if %}, {% for %}, {% block %}, ...), one color per nesting level;</li>
+      <li>when the caret is on a Twig tag, the other tags of the same block ({% else %}, {% endif %}, ...) are highlighted.</li>
+    </ul>
+    Colors: Settings | Editor | Color Scheme | Twig Block Tree.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.jetbrains.twig</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <editorFactoryListener implementation="twigblocktree.TwigBlockTreeEditorListener"/>
+        <colorSettingsPage implementation="twigblocktree.TwigBlockTreeColorSettingsPage"/>
+    </extensions>
+</idea-plugin>
