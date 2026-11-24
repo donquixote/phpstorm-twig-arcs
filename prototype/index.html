@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Twig Block Tree – design prototype</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 13px system-ui, sans-serif; margin: 0; display: flex; gap: 16px; padding: 16px; background: #eceef1; color: #222; }
+  #panel { width: 320px; flex: none; }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  fieldset { border: 1px solid #c9ccd2; border-radius: 6px; margin: 0 0 10px; padding: 6px 10px 8px; background: #fff; }
+  legend { font-weight: 600; padding: 0 4px; }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 3px 0; }
+  label span.v { width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: #555; }
+  input[type=range] { width: 120px; }
+  select { width: 130px; }
+  #stage { flex: 1; min-width: 0; }
+  #wrap { overflow: auto; max-height: calc(100vh - 330px); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.25); display: inline-block; max-width: 100%; }
+  canvas { display: block; outline: none; cursor: text; }
+  .hint { color: #555; margin: 6px 0; }
+  .row { display: flex; gap: 12px; margin-top: 8px; }
+  .row > div { flex: 1; min-width: 0; }
+  textarea { width: 100%; box-sizing: border-box; height: 200px; font: 12px ui-monospace, monospace; }
+  pre#json { white-space: pre-wrap; font: 11px ui-monospace, monospace; background: #fff; padding: 6px; margin: 0; height: 188px; overflow: auto; border: 1px solid #c9ccd2; }
+  button { margin: 4px 4px 0 0; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>Twig Block Tree – prototype</h1>
+  <div id="controls"></div>
+  <button id="reset">Reset settings</button>
+</div>
+<div id="stage">
+  <div id="wrap"><canvas id="c" tabindex="0"></canvas></div>
+  <p class="hint">Click in the text or use the arrow keys to move the caret. Gutter geometry (icon/fold columns) is approximate.</p>
+  <div class="row">
+    <div><b>Template</b> (editable) <button id="resetSample">Reset sample</button><textarea id="src" spellcheck="false"></textarea></div>
+    <div><b>Settings</b> (paste this to Claude) <button id="copy">Copy</button><pre id="json"></pre></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ------------------------------------------------------------------ sample
+
+const SAMPLE = `{# Drupal-style template #}
+{% extends 'base.html.twig' %}
+{% block content %}
+<div class="list">
+  {% for item in items %}
+    <li class="{{ loop.index is odd ? 'odd' : 'even' }}">
+      {% if item.active %}
+        <b>{{ item.name }}</b>
+        {% include 'badge.html.twig' %}
+      {% elseif item.draft %}
+        <i>{{ item.name }} (draft)</i>
+      {% else %}
+        {{ item.name|upper }}
+      {% endif %}
+    </li>
+  {% else %}
+    <li>No items.</li>
+  {% endfor %}
+</div>
+{#
+  Multi-line comment.
+  Below: tags with different indentation.
+#}
+    {% if user %}
+      <p>Hello {{ user.name }}</p>
+  {% else %}
+      <p>Please log in.</p>
+{% endif %}
+<div>{% if footer %}
+  {{ footer }}
+{% endif %}</div>
+{% if compact %}<hr>{% endif %}
+{{ include('teaser.html.twig', {
+  title: node.label,
+  url: url
+}) }}
+{% endblock %}
+`;
+
+// ------------------------------------------------------------------ settings
+
+const DEFAULTS = {
+  theme: 'light',
+  zoom: 1,
+  fontSize: 13,
+  lineHeight: 18,
+  // gutter brackets
+  bracketShape: 'curved',
+  curveMode: 'per branch',
+  curveWidth: 1.5,
+  curveWidthActive: 2,
+  curveLine: 'dotted',
+  curveDotGap: 3,
+  padLeft: 1,
+  lineWidth: 1,
+  columnStep: 3,
+  tickMin: 3,
+  defaultStyle: 'solid',
+  dash: 2,
+  dashGap: 2,
+  halos: true,
+  haloAlpha: 0.3,
+  // connectors
+  connectors: 'all',
+  connectorStyle: 'directional',
+  dirDot: 1,
+  dirGap: 1,
+  dirHaloH: 4,
+  dirHaloAlpha: 0.3,
+  dirHaloShape: 'gradient',
+  dirMid: 'both',
+  dirFromBracket: true,
+  blockFill: true,
+  blockFillAlpha: 0.08,
+  chevrons: true,
+  chevronSize: 3,
+  dotSize: 3,
+  dotGap: 2,
+  dotAlpha: 1,
+  tagGap: 2,
+  // text effects
+  greyExcluded: true,
+  matchedTags: true,
+  matchedRange: 'whole tag',
+  bgStatements: true,
+  bgPrints: false,
+  bgComments: false,
+  tagBgRounded: true,
+  // realism
+  indentGuides: true,
+  indentUnit: 2,
+  foldArrows: true,
+  breakpoint: true,
+  colors: {
+    light: { def: '#7b8fe6', act: '#2da44e', exc: '#e5484d', tagBg: '#eef1f8', printBg: '#f3eef8', commentBg: '#f2f2f2', matched: '#c7e3ff' },
+    dark:  { def: '#6878c8', act: '#4ebe6a', exc: '#f06a6a', tagBg: '#272b34', printBg: '#2d2833', commentBg: '#292a2d', matched: '#2f4a6a' },
+  },
+};
+
+const CONTROLS = [
+  ['View', [
+    ['theme', 'Theme', 'select', ['light', 'dark']],
+    ['zoom', 'Pixel zoom', 'select', [1, 2, 3, 4]],
+    ['fontSize', 'Font size', 'range', 10, 20, 1],
+    ['lineHeight', 'Line height', 'range', 14, 28, 1],
+  ]],
+  ['Bracket shape', [
+    ['bracketShape', 'Shape', 'select', ['curved', 'gutter columns']],
+    ['curveMode', 'Curves', 'select', ['per branch', 'whole block']],
+    ['curveWidth', 'Dot size / line width', 'range', 1, 4, 0.5],
+    ['curveWidthActive', '… for the caret\'s branch', 'range', 1, 4, 0.5],
+    ['curveLine', 'Curve line', 'select', ['dotted', 'solid']],
+    ['curveDotGap', 'Space between dots', 'range', 1, 8, 0.5],
+  ]],
+  ['Gutter brackets', [
+    ['lineWidth', 'Line width', 'range', 1, 4, 1],
+    ['columnStep', 'Column step', 'range', 2, 10, 1],
+    ['padLeft', 'Left padding', 'range', 0, 6, 1],
+    ['tickMin', 'Tick past last column', 'range', 0, 10, 1],
+    ['defaultStyle', 'Blue (no caret) style', 'select', ['solid', 'dashed']],
+    ['dash', 'Dash length', 'range', 1, 6, 1],
+    ['dashGap', 'Dash gap', 'range', 1, 6, 1],
+    ['halos', 'Halos (green left, red right)', 'check'],
+    ['haloAlpha', 'Halo opacity', 'range', 0.05, 1, 0.05],
+  ]],
+  ['Dotted connectors', [
+    ['connectors', 'Show for', 'select', ['all', 'caret blocks', 'none']],
+    ['connectorStyle', 'Style', 'select', ['directional', 'round dots']],
+    ['tagGap', 'Space before tag', 'range', 0, 8, 1],
+  ]],
+  ['Directional connectors', [
+    ['dirDot', 'Dot length', 'range', 1, 6, 1],
+    ['dirGap', 'Gap between dots', 'range', 1, 6, 1],
+    ['dirHaloH', 'Halo height', 'range', 1, 30, 1],
+    ['dirHaloAlpha', 'Halo opacity', 'range', 0.05, 1, 0.05],
+    ['dirHaloShape', 'Halo shape', 'select', ['gradient', 'flat']],
+    ['dirMid', 'Halo on else/elseif', 'select', ['both', 'down', 'none']],
+    ['dirFromBracket', 'Halo starts at bracket', 'check'],
+    ['chevrons', 'Chevrons ▾ ▴ near the tag', 'check'],
+    ['chevronSize', 'Chevron size', 'range', 2, 8, 1],
+  ]],
+  ['Block area fill', [
+    ['blockFill', 'Tint area between connectors', 'check'],
+    ['blockFillAlpha', 'Tint opacity', 'range', 0.02, 0.4, 0.01],
+  ]],
+  ['Round dot connectors', [
+    ['dotSize', 'Dot diameter', 'range', 1, 6, 1],
+    ['dotGap', 'Gap between dots', 'range', 1, 8, 1],
+    ['dotAlpha', 'Dot opacity', 'range', 0.1, 1, 0.05],
+  ]],
+  ['Text', [
+    ['greyExcluded', 'Grey out excluded branches', 'check'],
+    ['matchedTags', 'Highlight matching tags', 'check'],
+    ['matchedRange', 'Matching highlight covers', 'select', ['{% name', 'whole tag', 'name only']],
+    ['bgStatements', 'Background on {% %} statements', 'check'],
+    ['bgPrints', 'Background on {{ }} prints', 'check'],
+    ['bgComments', 'Background on {# #} comments', 'check'],
+    ['tagBgRounded', 'Rounded background', 'check'],
+  ]],
+  ['Realism', [
+    ['indentGuides', 'PhpStorm indent guides', 'check'],
+    ['indentUnit', 'Indent size', 'range', 1, 8, 1],
+    ['foldArrows', 'Fold arrows on block lines', 'check'],
+    ['breakpoint', 'A breakpoint icon (line 8)', 'check'],
+  ]],
+  ['Colors (current theme)', [
+    ['c.def', 'Block without caret', 'color'],
+    ['c.act', 'Branch with caret', 'color'],
+    ['c.exc', 'Other branches', 'color'],
+    ['c.tagBg', '{% %} background', 'color'],
+    ['c.printBg', '{{ }} background', 'color'],
+    ['c.commentBg', '{# #} background', 'color'],
+    ['c.matched', 'Matching tags', 'color'],
+  ]],
+];
+
+const STORE = 'twigBlockTreePrototype';
+let S = load();
+function load() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE + '.settings'));
+    if (saved) return deepMerge(structuredClone(DEFAULTS), saved);
+  } catch (e) { /* ignore */ }
+  return structuredClone(DEFAULTS);
+}
+function deepMerge(a, b) {
+  for (const k in b) {
+    if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) a[k] = deepMerge(a[k] || {}, b[k]);
+    else a[k] = b[k];
+  }
+  return a;
+}
+function save() { localStorage.setItem(STORE + '.settings', JSON.stringify(S)); }
+
+function getVal(key) { return key.startsWith('c.') ? S.colors[S.theme][key.slice(2)] : S[key]; }
+function setVal(key, v) { if (key.startsWith('c.')) S.colors[S.theme][key.slice(2)] = v; else S[key] = v; }
+
+function buildControls() {
+  const root = document.getElementById('controls');
+  root.innerHTML = '';
+  for (const [title, items] of CONTROLS) {
+    const fs = document.createElement('fieldset');
+    fs.innerHTML = `<legend>${title}</legend>`;
+    for (const [key, label, type, ...args] of items) {
+      const l = document.createElement('label');
+      l.append(label);
+      let input, valueEl;
+      if (type === 'range') {
+        input = Object.assign(document.createElement('input'), { type: 'range', min: args[0], max: args[1], step: args[2], value: getVal(key) });
+        valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.textContent = getVal(key);
+        input.oninput = () => { setVal(key, +input.value); valueEl.textContent = input.value; changed(); };
+        const box = document.createElement('span'); box.append(input, valueEl); l.append(box);
+      } else if (type === 'select') {
+        input = document.createElement('select');
+        for (const o of args[0]) input.append(new Option(o, o));
+        input.value = getVal(key);
+        input.onchange = () => {
+          const v = typeof args[0][0] === 'number' ? +input.value : input.value;
+          setVal(key, v); changed(); if (key === 'theme') buildControls();
+        };
+        l.append(input);
+      } else if (type === 'check') {
+        input = Object.assign(document.createElement('input'), { type: 'checkbox', checked: getVal(key) });
+        input.onchange = () => { setVal(key, input.checked); changed(); };
+        l.append(input);
+      } else if (type === 'color') {
+        input = Object.assign(document.createElement('input'), { type: 'color', value: getVal(key) });
+        input.oninput = () => { setVal(key, input.value); changed(); };
+        l.append(input);
+      }
+      fs.append(l);
+    }
+    root.append(fs);
+  }
+}
+
+function changed() { save(); render(); }
+
+// ------------------------------------------------------------------ text model
+
+const src = document.getElementById('src');
+src.value = localStorage.getItem(STORE + '.template') || SAMPLE;
+let text, lines, lineStarts, blocks, caret = 0;
+
+function setText(t) {
+  text = t.replace(/\t/g, '    ');
+  lines = text.split('\n');
+  lineStarts = [];
+  let o = 0;
+  for (const l of lines) { lineStarts.push(o); o += l.length + 1; }
+  blocks = parseBlocks(text);
+  caret = Math.min(caret, text.length);
+}
+
+function lineOf(offset) {
+  let lo = 0, hi = lineStarts.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= offset) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+function indentOf(line) {
+  const m = /^\s*/.exec(lines[line]);
+  return m[0].length === lines[line].length ? -1 : m[0].length;
+}
+
+/** Same rules as the plugin: opener, else/elseif (+ Drupal plural), structural end tag. Single-tag statements are no blocks. */
+function parseBlocks(t) {
+  const OPEN = new Set(['if', 'for', 'block', 'macro', 'embed', 'apply', 'autoescape', 'sandbox', 'spaceless',
+                        'filter', 'verbatim', 'with', 'cache', 'trans', 'set', 'guard']);
+  const MID = new Set(['else', 'elseif', 'plural']);
+  const re = /\{%-?\s*(\w+)([\s\S]*?)-?%\}/g;
+  const out = [], stack = [];
+  let m;
+  while ((m = re.exec(t))) {
+    const name = m[1], rest = m[2];
+    const nameAt = m.index + m[0].indexOf(name);
+    const tag = { start: m.index, end: m.index + m[0].length, nameStart: nameAt, nameEnd: nameAt + name.length };
+    if (name.startsWith('end')) {
+      const open = name.slice(3);
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].name === open) {
+          stack.length = i + 1;
+          const b = stack.pop();
+          b.tags.push(tag); b.end = tag.end;
+          out.push(b);
+          break;
+        }
+      }
+    } else if (MID.has(name)) {
+      if (stack.length) stack[stack.length - 1].tags.push(tag);
+    } else if (OPEN.has(name)) {
+      if (name === 'set' && /=/.test(rest)) continue;
+      if (name === 'block' && rest.trim().split(/\s+/).length > 1) continue;
+      stack.push({ name, tags: [tag], start: tag.start, depth: stack.length, parent: stack[stack.length - 1] || null });
+    }
+  }
+  for (const b of out) b.tagLines = b.tags.map(tg => lineOf2(t, tg.start));
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+function lineOf2(t, offset) { let n = 0; for (let i = 0; i < offset; i++) if (t.charCodeAt(i) === 10) n++; return n; }
+
+function branchAt(b, offset) {
+  let br = 0;
+  b.tags.forEach((tg, i) => { if (tg.start <= offset) br = i; });
+  return Math.min(br, b.tags.length - 2);
+}
+
+// ------------------------------------------------------------------ painting
+
+const THEME = {
+  light: { bg: '#ffffff', caretRow: '#f5f8fe', lineNo: '#aeb3c2', lineNoCur: '#5f6370', text: '#080808', twig: '#0033b3',
+           print: '#871094', html: '#0033b3', attr: '#174ad4', string: '#067d17', comment: '#8c8c8c', grey: '#a6a8ad',
+           guide: '#ebecf0', matched: '#c7e3ff', caret: '#000000', fold: '#a8adbd', bp: '#e55765' },
+  dark:  { bg: '#1e1f22', caretRow: '#26282e', lineNo: '#4b5059', lineNoCur: '#a1a3ab', text: '#bcbec4', twig: '#cf8e6d',
+           print: '#c77dbb', html: '#d5b778', attr: '#bababa', string: '#6aab73', comment: '#7a7e85', grey: '#5f6268',
+           guide: '#313438', matched: '#2f4a6a', caret: '#ced0d6', fold: '#6f737a', bp: '#db5c5c' },
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let geo = null;
+
+function colorize() {
+  const col = new Array(text.length).fill('text');
+  const mark = (re, kind) => { let m; re.lastIndex = 0; while ((m = re.exec(text))) for (let i = m.index; i < m.index + m[0].length; i++) col[i] = kind; };
+  mark(/<\/?[a-zA-Z][^>]*>/g, 'html');
+  mark(/"[^"\n]*"/g, 'attr');
+  mark(/\{\{[\s\S]*?\}\}/g, 'print');
+  mark(/\{%[\s\S]*?%\}/g, 'twig');
+  mark(/'[^'\n]*'/g, 'string');
+  mark(/\{#[\s\S]*?#\}/g, 'comment');
+  return col;
+}
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+
+function render() {
+  setText(src.value);
+  const T = THEME[S.theme];
+  const C = S.colors[S.theme];
+  const lh = S.lineHeight, z = S.zoom, dpr = window.devicePixelRatio || 1;
+  ctx.font = `${S.fontSize}px "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace`;
+  const cw = ctx.measureText('M').width;
+
+  // ---- gutter geometry (unscaled px, like the IDE at 100%)
+  const maxDepth = blocks.reduce((m, b) => Math.max(m, b.depth), 0);
+  const lnDigits = Math.max(2, String(lines.length).length);
+  const lnW = Math.ceil(lnDigits * cw * 0.9) + 14;
+  const areaX = lnW + 6;
+  const reserved = S.padLeft + maxDepth * S.columnStep + S.lineWidth + S.tickMin;
+  const areaW = Math.max(8, reserved) + 2;
+  const iconX = areaX + areaW, iconW = 16, iconGap = 4;
+  const foldX = iconX + iconW + iconGap, foldW = 14;
+  const gutterW = foldX + foldW;
+  const textX = gutterW + 4;
+  const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  const W = Math.max(640, Math.ceil(textX + (maxLen + 4) * cw));
+  const H = lines.length * lh + 8;
+  geo = { lh, cw, textX, gutterW };
+
+  canvas.width = W * z * dpr; canvas.height = H * z * dpr;
+  canvas.style.width = W * z + 'px'; canvas.style.height = H * z + 'px';
+  ctx.setTransform(z * dpr, 0, 0, z * dpr, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.font = `${S.fontSize}px "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace`;
+  ctx.textBaseline = 'middle';
+
+  const caretLine = lineOf(caret);
+  const rowY = l => l * lh + 4;
+  const midY = l => rowY(l) + Math.floor(lh / 2);
+
+  // ---- state from caret
+  const active = new Map();
+  for (const b of blocks) if (b.start <= caret && caret <= b.end) active.set(b, branchAt(b, caret));
+  const excluded = [];
+  for (const [b, br] of active) for (let i = 0; i < b.tags.length - 1; i++) if (i !== br) excluded.push([b.tags[i].end, b.tags[i + 1].start]);
+  let matched = null;
+  for (const b of blocks) if (b.tags.some(tg => tg.start <= caret && caret <= tg.end)) matched = b;
+  if (matched && !matched.tags.some(tg => tg.start <= caret && caret <= tg.end)) matched = null;
+
+  // ---- background
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = T.caretRow; ctx.fillRect(textX - 4, rowY(caretLine), W, lh);
+
+  // ---- indent guides (approximation of PhpStorm's)
+  if (S.indentGuides) {
+    ctx.fillStyle = T.guide;
+    for (let l = 0; l < lines.length; l++) {
+      let ind = indentOf(l);
+      if (ind < 0) { // blank line: continue guides of the surrounding lines
+        let a = l - 1, b = l + 1;
+        while (a >= 0 && indentOf(a) < 0) a--;
+        while (b < lines.length && indentOf(b) < 0) b++;
+        ind = Math.min(a >= 0 ? indentOf(a) : 0, b < lines.length ? indentOf(b) : 0);
+      }
+      for (let c = 0; c < ind; c += S.indentUnit) ctx.fillRect(Math.round(textX + c * cw), rowY(l), 1, lh);
+    }
+  }
+
+  // Background over a text range, split per line (tags can span lines).
+  const spanBg = (start, end, color, rounded) => {
+    ctx.fillStyle = color;
+    for (let l = lineOf(start); l <= lineOf(Math.max(start, end - 1)); l++) {
+      const a = Math.max(start, lineStarts[l]) - lineStarts[l];
+      const b = Math.min(end, lineStarts[l] + lines[l].length) - lineStarts[l];
+      if (b <= a) continue;
+      const x = textX + a * cw, w = (b - a) * cw, y = rowY(l) + 1, h = lh - 2;
+      if (rounded && ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x - 1, y, w + 2, h, 3); ctx.fill(); }
+      else ctx.fillRect(x, y, w, h);
+    }
+  };
+
+  // ---- pale background on Twig constructs
+  for (const [on, re, color] of [[S.bgStatements, /\{%[\s\S]*?%\}/g, C.tagBg],
+                                  [S.bgPrints, /\{\{[\s\S]*?\}\}/g, C.printBg],
+                                  [S.bgComments, /\{#[\s\S]*?#\}/g, C.commentBg]]) {
+    if (!on) continue;
+    let m;
+    while ((m = re.exec(text))) spanBg(m.index, m.index + m[0].length, color, S.tagBgRounded);
+  }
+
+  // ---- matched tags
+  if (S.matchedTags && matched) {
+    for (const tg of matched.tags) {
+      const [a, b] = S.matchedRange === 'whole tag' ? [tg.start, tg.end]
+                   : S.matchedRange === 'name only' ? [tg.nameStart, tg.nameEnd]
+                   : [tg.start, tg.nameEnd];
+      spanBg(a, b, C.matched, S.tagBgRounded);
+    }
+  }
+
+  // ---- block area fill (under the text): per branch, from the bracket to the tag column, between connectors
+  const bracketX = b => areaX + S.padLeft + b.depth * S.columnStep;
+  const targetX = l => textX + Math.max(0, indentOf(l)) * cw - S.tagGap;
+  const styleOfB = (b, br) => !active.has(b) ? 'def' : active.get(b) === br ? 'act' : 'exc';
+  if (S.blockFill && S.bracketShape !== 'curved') {
+    for (const b of blocks) {
+      const tl = b.tagLines, n = tl.length;
+      if (tl[0] === tl[n - 1]) continue;
+      const showConn = S.connectors === 'all' || (S.connectors === 'caret blocks' && active.has(b));
+      if (!showConn) continue;
+      const x0 = (S.dirFromBracket ? bracketX(b) : areaX + areaW) + S.lineWidth;
+      const x1 = Math.min(...tl.map(targetX));
+      for (let k = 0; k + 1 < n; k++) {
+        const y0 = midY(tl[k]) + S.lineWidth, y1 = midY(tl[k + 1]);
+        if (x1 > x0 && y1 > y0) { ctx.fillStyle = hexA(C[styleOfB(b, k)], S.blockFillAlpha); ctx.fillRect(x0, y0, x1 - x0, y1 - y0); }
+      }
+    }
+  }
+
+  // ---- text
+  const kinds = colorize();
+  const isExcluded = o => S.greyExcluded && excluded.some(([a, b]) => o >= a && o < b);
+  for (let l = 0; l < lines.length; l++) {
+    const s = lineStarts[l], line = lines[l];
+    let i = 0;
+    while (i < line.length) {
+      const k = isExcluded(s + i) ? 'grey' : kinds[s + i];
+      let j = i + 1;
+      while (j < line.length && (isExcluded(s + j) ? 'grey' : kinds[s + j]) === k) j++;
+      ctx.fillStyle = T[k];
+      ctx.fillText(line.slice(i, j), textX + i * cw, midY(l) + 1);
+      i = j;
+    }
+  }
+
+  // ---- gutter: line numbers, breakpoint, fold arrows
+  ctx.textAlign = 'right';
+  ctx.font = `${Math.max(9, S.fontSize - 1)}px "JetBrains Mono", ui-monospace, monospace`;
+  for (let l = 0; l < lines.length; l++) {
+    ctx.fillStyle = l === caretLine ? T.lineNoCur : T.lineNo;
+    ctx.fillText(String(l + 1), lnW, midY(l) + 1);
+  }
+  ctx.textAlign = 'left';
+  ctx.font = `${S.fontSize}px "JetBrains Mono", ui-monospace, monospace`;
+  if (S.breakpoint && lines.length > 7) {
+    ctx.fillStyle = T.bp;
+    ctx.beginPath(); ctx.arc(iconX + iconW / 2, midY(7), 6, 0, Math.PI * 2); ctx.fill();
+  }
+  if (S.foldArrows) {
+    ctx.strokeStyle = T.fold; ctx.lineWidth = 1;
+    for (const b of blocks) {
+      if (b.tagLines[0] === b.tagLines[b.tagLines.length - 1]) continue;
+      for (const [l, up] of [[b.tagLines[0], false], [b.tagLines[b.tagLines.length - 1], true]]) {
+        const cx = foldX + foldW / 2, cy = midY(l);
+        ctx.beginPath();
+        if (up) { ctx.moveTo(cx - 3.5, cy + 2); ctx.lineTo(cx, cy - 1.5); ctx.lineTo(cx + 3.5, cy + 2); }
+        else { ctx.moveTo(cx - 3.5, cy - 2); ctx.lineTo(cx, cy + 1.5); ctx.lineTo(cx + 3.5, cy - 2); }
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ---- brackets + connectors
+  const lw = S.lineWidth;
+  const gap = Math.max(0, S.columnStep - lw);
+  const tickEnd = areaX + areaW - 1;
+  const styleOf = (b, br) => !active.has(b) ? 'def' : active.get(b) === br ? 'act' : 'exc';
+
+  const vline = (style, x, y0, y1) => {
+    if (y1 <= y0) return;
+    const c = C[style];
+    if (S.halos && style === 'act') { ctx.fillStyle = hexA(c, S.haloAlpha); const hx = Math.max(areaX, x - gap); ctx.fillRect(hx, y0, x - hx, y1 - y0); }
+    if (S.halos && style === 'exc') { ctx.fillStyle = hexA(c, S.haloAlpha); ctx.fillRect(x + lw, y0, gap, y1 - y0); }
+    ctx.fillStyle = c;
+    if (style === 'def' && S.defaultStyle === 'dashed') dashes(y0, y1, (a, b) => ctx.fillRect(x, a, lw, b - a));
+    else ctx.fillRect(x, y0, lw, y1 - y0);
+  };
+  const hline = (style, x0, x1, y) => {
+    if (x1 <= x0) return;
+    ctx.fillStyle = C[style];
+    if (style === 'def' && S.defaultStyle === 'dashed') dashes(x0, x1, (a, b) => ctx.fillRect(a, y, b - a, lw));
+    else ctx.fillRect(x0, y, x1 - x0, lw);
+  };
+  const dashes = (from, to, fill) => {
+    const p = S.dash + S.dashGap;
+    for (let q = Math.floor(from / p) * p; q < to; q += p) { const a = Math.max(q, from), b = Math.min(q + S.dash, to); if (b > a) fill(a, b); }
+  };
+  const dots = (style, x0, x1, y) => {
+    const d = S.dotSize, p = d + S.dotGap, r = d / 2;
+    ctx.fillStyle = hexA(C[style], S.dotAlpha);
+    for (let k = Math.ceil(x0 / p); k * p + d <= x1; k++) {
+      const cx = k * p + r;
+      ctx.beginPath(); ctx.arc(cx, y + lw / 2, r, 0, Math.PI * 2); ctx.fill();
+    }
+  };
+
+  // Directional connector: thin dotted line, halo on the side where the block's content is.
+  // up/down: style of the halo above/below the line, or null for none.
+  const halo = (style, x0, x1, y, up) => {
+    const h = S.dirHaloH, c = C[style];
+    const yA = up ? y - h : y + lw, yB = up ? y : y + lw + h;
+    if (S.dirHaloShape === 'gradient') {
+      const g = ctx.createLinearGradient(0, up ? yB : yA, 0, up ? yA : yB);
+      g.addColorStop(0, hexA(c, S.dirHaloAlpha));
+      g.addColorStop(1, hexA(c, 0));
+      ctx.fillStyle = g;
+    } else {
+      ctx.fillStyle = hexA(c, S.dirHaloAlpha);
+    }
+    ctx.fillRect(x0, yA, x1 - x0, yB - yA);
+  };
+  const directional = (lineStyle, up, down, xBracket, x0, x1, y) => {
+    if (x1 <= x0) return;
+    const hx = S.dirFromBracket ? xBracket + lw : x0;
+    if (up) halo(up, hx, x1, y, true);
+    if (down) halo(down, hx, x1, y, false);
+    ctx.fillStyle = C[lineStyle];
+    const p = S.dirDot + S.dirGap;
+    for (let q = Math.ceil(x0 / p) * p; q < x1; q += p) ctx.fillRect(q, y, Math.min(S.dirDot, x1 - q), lw);
+    if (S.chevrons) {
+      const cs = S.chevronSize, cx = x1 - cs - 1;
+      const tri = (style, dir) => { // dir +1: pointing down (below the line), -1: pointing up
+        ctx.fillStyle = C[style];
+        const base = dir > 0 ? y + lw : y;
+        ctx.beginPath(); ctx.moveTo(cx - cs, base); ctx.lineTo(cx + cs, base); ctx.lineTo(cx, base + dir * cs); ctx.closePath(); ctx.fill();
+      };
+      if (down) tri(down, 1);
+      if (up) tri(up, -1);
+    }
+  };
+
+  if (S.bracketShape === 'curved') drawCurves();
+  else for (const b of blocks) {
+    const x = areaX + S.padLeft + b.depth * S.columnStep;
+    const tl = b.tagLines, n = tl.length;
+    const single = tl[0] === tl[n - 1];
+    const showDots = S.connectors === 'all' || (S.connectors === 'caret blocks' && active.has(b));
+    const target = l => textX + Math.max(0, indentOf(l)) * cw - S.tagGap;
+    if (single) {
+      const st = styleOf(b, branchAt(b, caret));
+      const y0 = rowY(tl[0]) + Math.floor(lh / 4), y1 = rowY(tl[0]) + lh - Math.floor(lh / 4);
+      vline(st, x, y0, y1);
+      hline(st, x, tickEnd, y0); hline(st, x, tickEnd, y1 - lw);
+      if (showDots) {
+        if (S.connectorStyle === 'round dots') dots(st, tickEnd + 1, target(tl[0]), midY(tl[0]));
+        else directional(st, null, null, x, tickEnd + 1, target(tl[0]), midY(tl[0]));
+      }
+      continue;
+    }
+    for (let k = 0; k < n; k++) {
+      const br = Math.min(k, n - 2);
+      const st = styleOf(b, br);
+      const y = midY(tl[k]);
+      hline(st, x, tickEnd, y);
+      if (showDots) {
+        if (S.connectorStyle === 'round dots') {
+          dots(st, tickEnd + 1, target(tl[k]), y);
+        } else {
+          const isOpen = k === 0, isClose = k === n - 1;
+          const prev = styleOf(b, Math.max(0, k - 1));
+          const up = isOpen ? null : isClose ? st : (S.dirMid === 'both' ? prev : null);
+          const down = isClose ? null : (isOpen || S.dirMid !== 'none') ? st : null;
+          directional(st, up, down, x, tickEnd + 1, target(tl[k]), y);
+        }
+      }
+      if (k + 1 < n) vline(st, x, y, midY(tl[k + 1]) + (k + 2 === n ? lw : 0));
+    }
+  }
+
+  // ---- curved brackets: half circle if it fits, else vertical line with quarter circles
+  function drawCurves() {
+    const leftmost = new Map();
+    const strokeStyle = style => {
+      ctx.strokeStyle = C[style];
+      const w = style === 'act' ? S.curveWidthActive : S.curveWidth;
+      ctx.lineWidth = w;
+      if (S.curveLine === 'dotted') {
+        // zero-length dashes with round caps = round dots, one line width across
+        ctx.lineCap = 'round';
+        ctx.setLineDash([0, w + S.curveDotGap]);
+      } else {
+        ctx.lineCap = 'butt';
+        ctx.setLineDash(style === 'def' && S.defaultStyle === 'dashed' ? [S.dash, S.dashGap] : []);
+      }
+    };
+    // Pieces are left-side arcs {cx, cy, r} or vertical lines {x}, each covering y in [a, b].
+    const xAt = (pieces, y) => {
+      for (const p of pieces) {
+        if (y < p.a - 0.01 || y > p.b + 0.01) continue;
+        return p.x !== undefined ? p.x : p.cx - Math.sqrt(Math.max(0, p.r * p.r - (y - p.cy) ** 2));
+      }
+      return pieces[0].cx;
+    };
+    const theta = (p, y) => Math.PI - Math.asin(Math.max(-1, Math.min(1, (y - p.cy) / p.r)));
+    const strokeRange = (pieces, ya, yb) => {
+      for (const p of pieces) {
+        const a = Math.max(p.a, ya), b = Math.min(p.b, yb);
+        if (b <= a) continue;
+        ctx.beginPath();
+        if (p.x !== undefined) { ctx.moveTo(p.x, a); ctx.lineTo(p.x, b); }
+        else if (p.r > 0) ctx.arc(p.cx, p.cy, p.r, theta(p, a), theta(p, b), true);
+        ctx.stroke();
+      }
+    };
+    const hstroke = (x0, x1, y) => { if (x1 > x0 + 0.5) { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); } };
+
+    // Shape between two tag lines: half circle if it fits left of tx, else vertical line + quarter circles.
+    const shape = (tx, y0, y1, limit) => {
+      const r = (y1 - y0) / 2;
+      if (tx - r >= limit) return { left: tx - r, pieces: [{ cx: tx, cy: (y0 + y1) / 2, r, a: y0, b: y1 }] };
+      const R = Math.max(0, Math.min(r, tx - limit));
+      return { left: tx - R, pieces: [{ cx: tx, cy: y0 + R, r: R, a: y0, b: y0 + R },
+                                      { x: tx - R, a: y0 + R, b: y1 - R },
+                                      { cx: tx, cy: y1 - R, r: R, a: y1 - R, b: y1 }] };
+    };
+    // leftmost x per block and branch, so nested curves stay right of the branch they are in
+    const limitFor = b => {
+      const p = b.parent;
+      if (!p || !leftmost.has(p)) return areaX + S.padLeft;
+      const lefts = leftmost.get(p);
+      return lefts[Math.min(branchAt(p, b.start), lefts.length - 1)] + S.columnStep;
+    };
+
+    for (const b of blocks) {
+      const tl = b.tagLines, n = tl.length;
+      const single = tl[0] === tl[n - 1];
+      const limit = limitFor(b);
+      const targets = tl.map(targetX);
+      let ys = tl.map(l => midY(l) + 0.5);
+
+      if (single) {
+        const m = midY(tl[0]) + 0.5, q = Math.floor(lh / 4);
+        const sh = shape(Math.min(...targets), m - q, m + q, limit);
+        leftmost.set(b, [sh.left]);
+        strokeStyle(styleOfB(b, branchAt(b, caret)));
+        strokeRange(sh.pieces, m - q, m + q);
+        continue;
+      }
+
+      if (S.curveMode === 'whole block') {
+        const tx = Math.min(...targets);
+        const sh = shape(tx, ys[0], ys[n - 1], limit);
+        leftmost.set(b, tl.slice(1).map(() => sh.left));
+        for (let k = 0; k < n; k++) {
+          strokeStyle(styleOfB(b, Math.min(k, n - 2)));
+          if (k + 1 < n) strokeRange(sh.pieces, ys[k], ys[k + 1]);
+          hstroke(k === 0 || k === n - 1 ? tx : xAt(sh.pieces, ys[k]), targets[k], ys[k]);
+        }
+        continue;
+      }
+
+      // per branch: one curve from each tag to the next, meeting at else/elseif (an inverted "3")
+      const lefts = [];
+      for (let k = 0; k + 1 < n; k++) {
+        const tx = Math.min(targets[k], targets[k + 1]);
+        const sh = shape(tx, ys[k], ys[k + 1], limit);
+        lefts.push(sh.left);
+        strokeStyle(styleOfB(b, k));
+        strokeRange(sh.pieces, ys[k], ys[k + 1]);
+        hstroke(tx, targets[k], ys[k]);
+        hstroke(tx, targets[k + 1], ys[k + 1]);
+      }
+      leftmost.set(b, lefts);
+    }
+    ctx.setLineDash([]);
+    ctx.lineCap = 'butt';
+  }
+
+  // ---- caret
+  const cl = caretLine, cc = caret - lineStarts[cl];
+  ctx.fillStyle = T.caret;
+  ctx.fillRect(Math.round(textX + cc * cw), rowY(cl) + 1, 2, lh - 2);
+
+  document.getElementById('json').textContent = JSON.stringify(S, null, 1);
+}
+
+// ------------------------------------------------------------------ interaction
+
+canvas.addEventListener('mousedown', e => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) / S.zoom, y = (e.clientY - r.top) / S.zoom;
+  const l = Math.max(0, Math.min(lines.length - 1, Math.floor((y - 4) / geo.lh)));
+  const c = Math.max(0, Math.min(lines[l].length, Math.round((x - geo.textX) / geo.cw)));
+  caret = lineStarts[l] + c;
+  canvas.focus();
+  render();
+});
+canvas.addEventListener('keydown', e => {
+  const l = lineOf(caret), c = caret - lineStarts[l];
+  const go = (nl, nc) => { nl = Math.max(0, Math.min(lines.length - 1, nl)); caret = lineStarts[nl] + Math.max(0, Math.min(lines[nl].length, nc)); };
+  if (e.key === 'ArrowUp') go(l - 1, c);
+  else if (e.key === 'ArrowDown') go(l + 1, c);
+  else if (e.key === 'ArrowLeft') caret = Math.max(0, caret - 1);
+  else if (e.key === 'ArrowRight') caret = Math.min(text.length, caret + 1);
+  else if (e.key === 'Home') go(l, 0);
+  else if (e.key === 'End') go(l, 1e9);
+  else return;
+  e.preventDefault();
+  render();
+});
+src.addEventListener('input', () => { localStorage.setItem(STORE + '.template', src.value); render(); });
+document.getElementById('resetSample').onclick = () => { src.value = SAMPLE; localStorage.removeItem(STORE + '.template'); render(); };
+document.getElementById('reset').onclick = () => { S = structuredClone(DEFAULTS); save(); buildControls(); render(); };
+document.getElementById('copy').onclick = () => navigator.clipboard.writeText(JSON.stringify(S, null, 1));
+
+buildControls();
+setText(src.value);
+caret = lineStarts[Math.min(7, lines.length - 1)] + 8; // inside the if branch
+render();
+</script>
+</body>
+</html>

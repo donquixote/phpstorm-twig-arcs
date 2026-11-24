@@ -4,10 +4,13 @@
     <vendor>local</vendor>
 
     <description><![CDATA[
-    Shows the Twig block structure around the caret, like the built-in HTML tag tree highlighting:
+    Shows the Twig block structure next to the tags, like a tag tree for Twig:
     <ul>
-      <li>a colored bar in the gutter for each enclosing Twig block ({% if %}, {% for %}, {% block %}, ...), one color per nesting level;</li>
-      <li>when the caret is on a Twig tag, the other tags of the same block ({% else %}, {% endif %}, ...) are highlighted.</li>
+      <li>a dotted curve left of each block's tags ({% if %}, {% for %}, {% block %}, ...), one per branch,
+          so if/else looks like an inverted "3";</li>
+      <li>around the caret: the current branch in green, the other branches in red with greyed-out content;</li>
+      <li>when the caret is on a Twig tag, the other tags of the same block are highlighted;</li>
+      <li>optional backgrounds for {% %}, {{ }} and {# #}.</li>
     </ul>
     Colors: Settings | Editor | Color Scheme | Twig Block Tree.
     ]]></description>
@@ -18,5 +21,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <editorFactoryListener implementation="twigblocktree.TwigBlockTreeEditorListener"/>
         <colorSettingsPage implementation="twigblocktree.TwigBlockTreeColorSettingsPage"/>
+        <additionalTextAttributes scheme="Default" file="colorSchemes/TwigBlockTreeDefault.xml"/>
+        <additionalTextAttributes scheme="Darcula" file="colorSchemes/TwigBlockTreeDarcula.xml"/>
     </extensions>
 </idea-plugin>

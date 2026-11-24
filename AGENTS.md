@@ -12,13 +12,26 @@ also does not exist for Twig (confirmed by the user).
 
 This plugin adds the Twig equivalent:
 
-1. **Gutter bars**: for each Twig block enclosing the caret, a thin colored bar on the left editor edge,
-   one color per nesting level. Each line shows the color of the innermost block containing it.
-   Colors are keyed by absolute depth (outermost = level 1), so a block keeps its color while the caret moves inside it.
-   The bar is drawn next to (not on top of) the HTML tag tree bar, so both remain visible.
-2. **Matching tags**: when the caret is on a Twig tag, all tags of the same block are highlighted
-   (`{% if` / `{% elseif` / `{% else` / `{% endif`). Only the `{% tagname` part is highlighted, not long conditions.
-3. A **color settings page** (Editor → Color Scheme → Twig Block Tree) for level colors and the matched-tag style.
+1. **Curves** (whole file): every Twig block gets dotted curves left of its tags, **one curve per branch**, so
+   if/elseif/else looks like an inverted "3". A branch curve is a half circle if it fits between the tag and the
+   left limit, otherwise a vertical line at the limit with a quarter circle at each end. Available space = indentation
+   + gutter up to its LEFT free painters area (left of the icon column); nested curves stay `NEST_STEP` right of the
+   curve of the parent *branch* they are in. Where the two tags of a branch start at different columns, the curve
+   starts at the leftmost one and a horizontal connector reaches the other. Curves end `TAG_GAP` before the first
+   character of the tag line. Single-line blocks get a small half circle.
+   Round dots: `DOT` 1.5px, `DOT_ACTIVE` 2px (caret's branch), `DOT_GAP` 3px.
+   A block is active when the caret is anywhere in its range. Colors (user tunes them in the color scheme):
+   `DEFAULT` blue = blocks without the caret, `ACTIVE` green = caret's branch, `OPPOSITE` red = other branches.
+2. **Greyed text**: content of excluded branches of active blocks gets `EXCLUDED_TEXT`
+   (falls back to `NOT_USED_ELEMENT_ATTRIBUTES`).
+3. **Matching tags**: when the caret is on a Twig tag, the **whole** tags of the same block are highlighted
+   (`MATCHED_TAG`, falls back to `MATCHED_BRACE_ATTRIBUTES`).
+4. **Backgrounds**: `STATEMENT_BACKGROUND` on every `{% %}` (pale by default, via `colorSchemes/*.xml` for
+   Default/Darcula), `PRINT_BACKGROUND` on `{{ }}` and `COMMENT_BACKGROUND` on `{# #}` (none by default).
+5. A **color settings page** (Editor → Color Scheme → Twig Block Tree) for all of the above. No other settings:
+   clearing an attribute in the color scheme turns that effect off.
+
+The look was designed in `prototype/index.html` (see below); the plugin implements one fixed configuration of it.
 
 ## Design decisions (and rejected alternatives)
 
@@ -30,17 +43,42 @@ This plugin adds the Twig equivalent:
 - **Caret-driven, own listeners** (not a daemon highlighting pass): an `EditorFactoryListener` attaches caret +
   document listeners to Twig editors; work is done with `ReadAction.nonBlocking(...).withDocumentsCommitted(...)
   .coalesceBy(...).finishOnUiThread(...)`. Highlighters live in the editor's own `MarkupModel` and are tracked in editor user data.
-- **Generic block detection**, no list of tag types: a *tag* is a composite PSI element whose first child token is
-  `TwigTokenTypes.STATEMENT_BLOCK_START` (`{%`). A *block* is a non-tag element whose first child is a tag and that has
-  ≥ 2 tag children. Single-tag statements (`{% set x = 1 %}`) are ignored. This relies on Twig's PSI shape:
-  `IF_STATEMENT` → children `IF_TAG`, content, `ELSE_TAG`, …, end tag (verified via usages in the open-source Symfony plugin).
+- **Block detection**, from the Twig plugin's parser (`com.jetbrains.twig.parser.TwigBlockStatements` in twig.jar):
+  ```
+  IF_STATEMENT: IF_TAG, content, ELSEIF_STATEMENT(ELSEIF_TAG, content), ELSE_STATEMENT(ELSE_TAG, content), ENDIF_TAG
+  FOR_STATEMENT: FOR_TAG, content, ELSE_STATEMENT(ELSE_TAG, content), ENDFOR_TAG
+  other statements: opening tag, content, end tag
+  ```
+  So else/elseif tags are **not** direct children of the if. Content statements (e.g. `{% include %}`) can be direct
+  children of a block. A *tag* is a composite element whose first token is `TwigTokenTypes.STATEMENT_BLOCK_START`.
+  A *block* = element whose first child is a tag (opener) + the first tags of its ELSE/ELSEIF_STATEMENT children +
+  its structural end tag (`TwigTag.isStructural() && getTagName().startsWith("end")`); needs ≥ 2 tags.
+  Structural tags in twig.jar: if/else/elseif, block, for, filter, autoescape, macro, spaceless, embed, sandbox,
+  verbatim, raw, set, with (+ end tags); non-structural: extends, import, include, do, flush. Unknown tags (Drupal
+  `trans`, `apply`, ...) get the generic `TwigElementTypes.TAG` type; whether they form blocks is untested.
+  Matched-tag highlighting: caret tag's parent (or grandparent for else/elseif) must be a block containing that tag.
 - The Twig PSI tree is obtained with `file.getViewProvider().getPsi(TwigLanguage.INSTANCE)`. For caret offsets inside
   HTML content, `findElementAt` returns an outer-language leaf whose parents are the enclosing Twig statements.
-- Gutter bars: `RangeHighlighter` with `HighlighterTargetArea.LINES_IN_RANGE` + a `LineMarkerRenderer`
-  (default position = RIGHT free-painters area, ≥ 5px wide). HTML tag tree draws at `r.x-1 .. r.x+1`;
-  we draw at `r.x + BAR_X_OFFSET` (2px) with width `BAR_WIDTH` (2px). Segments are computed per line so outer and inner
-  blocks never overlap (no reliance on paint order).
-- Colors: `ColorKey`s with `JBColor` light/dark defaults, deliberately different from the HTML tag tree palette.
+- Painting: curves are computed in editor content coordinates (negative x = in the gutter, measured from its right
+  edge, which touches the text area's x = 0). Three whole-document greedy highlighters per editor: a
+  `CustomHighlighterRenderer` paints the curves in the text area; a `LineMarkerRendererEx` at `Position.CUSTOM` gets the
+  full gutter width and paints the same paths translated by the gutter width; an `AreaProbe` at `Position.LEFT` paints
+  nothing but makes the left free painters area appear and reports its x (the left limit). The area is widened with
+  `reserveLeftFreePaintersAreaWidth` to fit nesting. Each branch (with its connectors) is one `Path2D` stroked with a
+  round-dot `BasicStroke` (near-zero dashes + round caps). Curves are recomputed per paint (y depends on folding and
+  soft wraps); only connector x positions are cached (`Layout`, per model + space width).
+- Layers: range highlighters below `HighlighterLayer.SYNTAX` rank *under* the lexer's syntax attributes
+  (`IterationState`), so the tag backgrounds use layer `SYNTAX`; otherwise a background from the Twig/template
+  color settings hides them.
+- Caching: block model (pre-order list with parent indices, depth, tag lines, plus all statement/print/comment ranges)
+  per document modification stamp (background).
+  Caret moves only update `State.activeBranches`, the matched-tag / greyed-text highlighters, and repaint.
+- Design history (rejected): background tinting; folding regions; gutter bars next to the HTML tag tree bar
+  (distracting); gutter columns per nesting depth in the LEFT free painters area with per-level colors,
+  checkerboard, halos (too disconnected from the code); a guide line directly below `{%`; straight brackets left of
+  the tags; directional halos/chevrons/area fill on connectors (prototype only); dotted/dashed 1px lines (too
+  faint); blue/orange/violet (too similar). Current: per-branch dotted curves.
+- Colors: `ColorKey`s with `JBColor` light/dark defaults.
   Matched-tag `TextAttributesKey` falls back to `CodeInsightColors.MATCHED_BRACE_ATTRIBUTES`.
 - Written in **Java** (not Kotlin) to avoid Kotlin compiler / platform metadata version mismatches.
 
@@ -81,3 +119,7 @@ Reference implementation in the platform that this mirrors:
 - `src/main/java/twigblocktree/TwigBlockTreeColors.java`: color keys.
 - `src/main/java/twigblocktree/TwigBlockTreeColorSettingsPage.java`: color settings page.
 - `src/main/resources/META-INF/plugin.xml`: registration; depends on `com.jetbrains.twig`.
+- `src/main/resources/colorSchemes/TwigBlockTree{Default,Darcula}.xml`: default {% %} background per scheme.
+- `prototype/index.html`: standalone browser mockup (canvas) of the editor + gutter for trying visual designs
+  cheaply before porting them to the plugin. Has live settings and exports them as JSON. Its parser mimics the
+  plugin's block rules with regexes. Not part of the plugin build.
