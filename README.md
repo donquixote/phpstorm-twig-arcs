@@ -6,6 +6,12 @@ A PhpStorm plugin that shows the structure of Twig templates: which tags belong 
 `{% if %}` / `{% elseif %}` / `{% else %}` the code under the caret is in. Made for long Twig templates, such as
 Drupal and Symfony themes. PhpStorm's own tag tree highlighting only follows HTML; this is the Twig equivalent.
 
+![Twig Arcs in PhpStorm: dotted arcs per branch, the caret's branch in green, excluded branches in red and greyed out](docs/screenshot.png)
+
+The caret is on the inner `{% if product.stock > 10 %}` (line 20): its tags are highlighted, its `else` is excluded.
+The first block has the same condition, so in the same loop iteration its `if` branch is certainly taken (green) and
+its other branches are excluded (red). The template is [docs/showcase.html.twig](docs/showcase.html.twig).
+
 ## Features
 
 - **Arcs for every block:** dotted curves connect the tags of each `if`, `for`, `block`, `macro`, `embed`, ...

@@ -1,0 +1,31 @@
+{% extends 'page.html.twig' %}
+
+{% block content %}
+  <ul class="products">
+    {% for product in products %}
+      <li>
+        {% if product.stock > 10 %}
+          <span class="in-stock">{{ product.name }}</span>
+        {% elseif product.stock > 0 %}
+          <span class="few-left">{{ product.name }}</span>
+        {% else %}
+          <span class="sold-out">{{ product.name }}</span>
+        {% endif %}
+
+        {% if product.stock > 0 %}
+          <button>Add to cart</button>
+        {% endif %}
+
+        {% if user.isAdmin %}
+          {% if product.stock > 10 %}
+            <a href="#">Start a sale</a>
+          {% else %}
+            <a href="#">Reorder</a>
+          {% endif %}
+        {% endif %}
+      </li>
+    {% else %}
+      <li>No products found.</li>
+    {% endfor %}
+  </ul>
+{% endblock %}
