@@ -1,6 +1,11 @@
-# AGENTS.md: Twig Block Tree (PhpStorm plugin)
+# AGENTS.md: Twig Arcs (PhpStorm plugin)
 
 Context for coding agents continuing work on this project. Read this first, then `README.md`.
+
+Formerly "Twig Block Tree" (briefly "Twig Bowls", rejected as an inside joke). Naming: display name
+"Twig Arcs: Matching Tag & Branch Highlighting" (brand + search terms: matching tag, highlight); short name "Twig Arcs"
+(settings page, README); plugin id `io.github.donquixote.twigarcs` (never
+change it once published); Java package the same; Gradle project / repo `twigarcs` (no dashes, matching the id).
 
 ## Purpose
 
@@ -19,16 +24,28 @@ This plugin adds the Twig equivalent:
    curve of the parent *branch* they are in. Where the two tags of a branch start at different columns, the curve
    starts at the leftmost one and a horizontal connector reaches the other. Curves end `TAG_GAP` before the first
    character of the tag line. Single-line blocks get a small half circle.
-   Round dots: `DOT` 1.5px, `DOT_ACTIVE` 2px (caret's branch), `DOT_GAP` 3px.
+   Round dots, gap edge to edge: `DOT` 1.5px + `DOT_GAP` 2.5px; caret's branch `DOT_ACTIVE` 2.5px + `DOT_GAP_ACTIVE` 1.5px.
    A block is active when the caret is anywhere in its range. Colors (user tunes them in the color scheme):
-   `DEFAULT` blue = blocks without the caret, `ACTIVE` green = caret's branch, `OPPOSITE` red = other branches.
+   `DEFAULT` blue = blocks without the caret, `ACTIVE` green = caret's branch, `OPPOSITE` red = excluded branches.
 2. **Greyed text**: content of excluded branches of active blocks gets `EXCLUDED_TEXT`
    (falls back to `NOT_USED_ELEMENT_ATTRIBUTES`).
 3. **Matching tags**: when the caret is on a Twig tag, the **whole** tags of the same block are highlighted
    (`MATCHED_TAG`, falls back to `MATCHED_BRACE_ATTRIBUTES`).
 4. **Backgrounds**: `STATEMENT_BACKGROUND` on every `{% %}` (pale by default, via `colorSchemes/*.xml` for
    Default/Darcula), `PRINT_BACKGROUND` on `{{ }}` and `COMMENT_BACKGROUND` on `{# #}` (none by default).
-5. A **color settings page** (Editor → Color Scheme → Twig Block Tree) for all of the above. No other settings:
+5. **Condition inference**: the caret's branch in an `if` block gives facts (earlier conditions false, own condition
+   true). Other `if` blocks with the same condition are decided branch by branch: known true → `INFERRED` ("taken if
+   reached": dots alternate between `INFERRED` color/`DOT_ACTIVE` and `DEFAULT` color/`DOT`), rest and known-false →
+   excluded (red, greyed); unknown → stop. Excluded stays valid under an undecided parent; inferred only means "taken
+   if reached". It becomes `ACTIVE` (*certainly taken*, drawn like the caret's branch) when every enclosing block up
+   to the first one containing the caret is an `if` whose branch around it is certainly taken, and that caret block's
+   branch around it is the caret's branch (`certainlyReached()`); undecided ifs and for/block/macro without the caret
+   make it uncertain. Only within the same
+   `for` loop (`Block.loop`); not across a `{% set var %}` of a variable in the condition. Blocks inside an excluded
+   branch are unreachable (all red). Matching condition texts get `MATCHED_CONDITION` (pale yellow by default).
+   Conditions: text between tag name and `%}`, whitespace-normalized, outer parentheses removed; `not X` is a
+   negation only if X is a single operand (Twig: `not a and b` = `(not a) and b`, kept opaque).
+6. A **color settings page** (Editor → Color Scheme → Twig Arcs) for all of the above. No other settings:
    clearing an attribute in the color scheme turns that effect off.
 
 The look was designed in `prototype/index.html` (see below); the plugin implements one fixed configuration of it.
@@ -49,7 +66,10 @@ The look was designed in `prototype/index.html` (see below); the plugin implemen
   FOR_STATEMENT: FOR_TAG, content, ELSE_STATEMENT(ELSE_TAG, content), ENDFOR_TAG
   other statements: opening tag, content, end tag
   ```
-  So else/elseif tags are **not** direct children of the if. Content statements (e.g. `{% include %}`) can be direct
+  So else/elseif tags are **not** direct children of the if. Moreover, `ELSEIF_STATEMENT` only ends at the end tag
+  (its "ends before" list names statement types, which never match a tag), so in `if/elseif/elseif/else` the
+  following elseif/else statements are **nested inside** the first ELSEIF_STATEMENT. `collectBlockTags()` descends
+  into branch statements; the matched-tag lookup climbs past all of them. Content statements (e.g. `{% include %}`) can be direct
   children of a block. A *tag* is a composite element whose first token is `TwigTokenTypes.STATEMENT_BLOCK_START`.
   A *block* = element whose first child is a tag (opener) + the first tags of its ELSE/ELSEIF_STATEMENT children +
   its structural end tag (`TwigTag.isStructural() && getTagName().startsWith("end")`); needs ≥ 2 tags.
@@ -94,7 +114,7 @@ Reference implementation in the platform that this mirrors:
 
 ## Status
 
-- **Compiles** (`./gradlew buildPlugin` OK, 2026-11-23; output `build/distributions/twig-block-tree-0.1.0.zip`).
+- **Compiles** (`./gradlew buildPlugin` OK, 2026-11-23; output `build/distributions/twigarcs-0.1.0.zip`).
   The only fix needed was the `intellijPlatform` extension import in `settings.gradle.kts`. **Not yet run in an IDE.**
 - Next steps:
   1. ~~`./gradlew buildPlugin` and fix compile errors.~~ Done.
@@ -114,12 +134,12 @@ Reference implementation in the platform that this mirrors:
 
 ## Files
 
-- `src/main/java/twigblocktree/TwigBlockTreeEditorListener.java`: attaches listeners to Twig editors.
-- `src/main/java/twigblocktree/TwigBlockTreeHighlighter.java`: PSI analysis + painting (main logic).
-- `src/main/java/twigblocktree/TwigBlockTreeColors.java`: color keys.
-- `src/main/java/twigblocktree/TwigBlockTreeColorSettingsPage.java`: color settings page.
+- `src/main/java/io/github/donquixote/twigarcs/TwigArcsEditorListener.java`: attaches listeners to Twig editors.
+- `src/main/java/io/github/donquixote/twigarcs/TwigArcsHighlighter.java`: PSI analysis + painting (main logic).
+- `src/main/java/io/github/donquixote/twigarcs/TwigArcsColors.java`: color keys.
+- `src/main/java/io/github/donquixote/twigarcs/TwigArcsColorSettingsPage.java`: color settings page.
 - `src/main/resources/META-INF/plugin.xml`: registration; depends on `com.jetbrains.twig`.
-- `src/main/resources/colorSchemes/TwigBlockTree{Default,Darcula}.xml`: default {% %} background per scheme.
+- `src/main/resources/colorSchemes/TwigArcs{Default,Darcula}.xml`: default {% %} background per scheme.
 - `prototype/index.html`: standalone browser mockup (canvas) of the editor + gutter for trying visual designs
   cheaply before porting them to the plugin. Has live settings and exports them as JSON. Its parser mimics the
   plugin's block rules with regexes. Not part of the plugin build.

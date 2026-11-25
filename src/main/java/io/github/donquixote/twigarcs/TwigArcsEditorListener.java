@@ -1,4 +1,4 @@
-package twigblocktree;
+package io.github.donquixote.twigarcs;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.editor.Editor;
@@ -18,9 +18,9 @@ import org.jetbrains.annotations.NotNull;
 /**
  * Attaches caret and document listeners to every editor that shows a Twig file.
  */
-public final class TwigBlockTreeEditorListener implements EditorFactoryListener {
+public final class TwigArcsEditorListener implements EditorFactoryListener {
 
-    private static final Key<Disposable> DISPOSABLE_KEY = Key.create("twigblocktree.disposable");
+    private static final Key<Disposable> DISPOSABLE_KEY = Key.create("io.github.donquixote.twigarcs.disposable");
 
     @Override
     public void editorCreated(@NotNull EditorFactoryEvent event) {
@@ -33,24 +33,24 @@ public final class TwigBlockTreeEditorListener implements EditorFactoryListener 
             return;
         }
 
-        Disposable disposable = Disposer.newDisposable("TwigBlockTree editor listener");
+        Disposable disposable = Disposer.newDisposable("TwigArcs editor listener");
         editor.putUserData(DISPOSABLE_KEY, disposable);
 
         editor.getCaretModel().addCaretListener(new CaretListener() {
             @Override
             public void caretPositionChanged(@NotNull CaretEvent e) {
-                TwigBlockTreeHighlighter.schedule(editor, disposable);
+                TwigArcsHighlighter.schedule(editor, disposable);
             }
         }, disposable);
 
         editor.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void documentChanged(@NotNull DocumentEvent e) {
-                TwigBlockTreeHighlighter.schedule(editor, disposable);
+                TwigArcsHighlighter.schedule(editor, disposable);
             }
         }, disposable);
 
-        TwigBlockTreeHighlighter.schedule(editor, disposable);
+        TwigArcsHighlighter.schedule(editor, disposable);
     }
 
     @Override

@@ -1,6 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.extensions.intellijPlatform
 
-rootProject.name = "twig-block-tree"
+rootProject.name = "twigarcs"
 
 plugins {
     // Downloads a matching JDK automatically if none is installed.

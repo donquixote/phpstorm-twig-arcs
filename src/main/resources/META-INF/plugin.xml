@@ -1,7 +1,7 @@
 <idea-plugin>
-    <id>twigblocktree</id>
-    <name>Twig Block Tree</name>
-    <vendor>local</vendor>
+    <id>io.github.donquixote.twigarcs</id>
+    <name>Twig Arcs: Matching Tag &amp; Branch Highlighting</name>
+    <vendor url="https://github.com/donquixote">donquixote</vendor>
 
     <description><![CDATA[
     Shows the Twig block structure next to the tags, like a tag tree for Twig:
@@ -12,16 +12,16 @@
       <li>when the caret is on a Twig tag, the other tags of the same block are highlighted;</li>
       <li>optional backgrounds for {% %}, {{ }} and {# #}.</li>
     </ul>
-    Colors: Settings | Editor | Color Scheme | Twig Block Tree.
+    Colors: Settings | Editor | Color Scheme | Twig Arcs.
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.jetbrains.twig</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <editorFactoryListener implementation="twigblocktree.TwigBlockTreeEditorListener"/>
-        <colorSettingsPage implementation="twigblocktree.TwigBlockTreeColorSettingsPage"/>
-        <additionalTextAttributes scheme="Default" file="colorSchemes/TwigBlockTreeDefault.xml"/>
-        <additionalTextAttributes scheme="Darcula" file="colorSchemes/TwigBlockTreeDarcula.xml"/>
+        <editorFactoryListener implementation="io.github.donquixote.twigarcs.TwigArcsEditorListener"/>
+        <colorSettingsPage implementation="io.github.donquixote.twigarcs.TwigArcsColorSettingsPage"/>
+        <additionalTextAttributes scheme="Default" file="colorSchemes/TwigArcsDefault.xml"/>
+        <additionalTextAttributes scheme="Darcula" file="colorSchemes/TwigArcsDarcula.xml"/>
     </extensions>
 </idea-plugin>

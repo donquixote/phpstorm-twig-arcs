@@ -1,4 +1,4 @@
-package twigblocktree;
+package io.github.donquixote.twigarcs;
 
 import com.intellij.lang.ASTNode;
 import com.intellij.openapi.Disposable;
@@ -36,13 +36,14 @@ import com.jetbrains.twig.elements.TwigTag;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.geom.Arc2D;
+import java.awt.geom.Ellipse2D;
+import java.awt.geom.PathIterator;
 import java.awt.geom.Path2D;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -81,9 +82,9 @@ import java.util.Map;
  * {@code for ... else} is built the same way. Other statements: opening tag, content, end tag.
  * Content statements like {@code {% include %}} can be direct children of a block too.
  */
-final class TwigBlockTreeHighlighter {
+final class TwigArcsHighlighter {
 
-    private static final Key<State> STATE_KEY = Key.create("twigblocktree.state");
+    private static final Key<State> STATE_KEY = Key.create("io.github.donquixote.twigarcs.state");
 
     private static final int LAYER = HighlighterLayer.SELECTION - 1;
     /** Greying of excluded branches must beat syntax colors. */
@@ -101,15 +102,20 @@ final class TwigBlockTreeHighlighter {
     private static final int NEST_STEP = 3;
     /** Space between the curve/connector end and the tag. */
     private static final int TAG_GAP = 2;
+    /** Dot size and space between dots (edge to edge): blocks without the caret and other branches. */
     private static final float DOT = 1.5f;
-    private static final float DOT_ACTIVE = 2f;
-    private static final float DOT_GAP = 3f;
+    private static final float DOT_GAP = 2.5f;
+    /** Dot size and space between dots: the caret's branch and "taken if reached" branches. */
+    private static final float DOT_ACTIVE = 2.5f;
+    private static final float DOT_GAP_ACTIVE = 1.5f;
 
     /**
      * A Twig block. {@code tags}: full ranges of the opening tag, else/elseif tags and end tag; {@code tagLines}:
-     * their lines. {@code parent}: index of the enclosing block, or -1.
+     * their lines. {@code parent}: index of the enclosing block, or -1. {@code loop}: index of the nearest enclosing
+     * {% for %} block, or -1. {@code conds}: per tag, the condition of an if/elseif tag, else null.
      */
-    private record Block(TextRange range, int parent, int depth, List<TextRange> tags, int[] tagLines) {
+    private record Block(TextRange range, int parent, int depth, int loop, Kind kind, List<TextRange> tags, int[] tagLines,
+                         List<Cond> conds) {
         int branchCount() {
             return tags.size() - 1;
         }
@@ -137,33 +143,58 @@ final class TwigBlockTreeHighlighter {
         }
     }
 
+    private enum Kind { IF, FOR, OTHER }
+
+    /** Condition of an if/elseif tag: {@code base} (normalized text) negated or not; {@code range}: its text. */
+    private record Cond(String base, boolean negated, TextRange range) {
+    }
+
+    /** A {% set name ... %} tag. */
+    private record SetTag(int offset, String name) {
+    }
+
     /**
      * {@code blocks} in pre-order: a parent always comes before its children.
      * {@code statements}, {@code prints}, {@code comments}: ranges of all {% %}, {{ }} and {# #} in the file.
      */
     private record Model(long stamp, List<Block> blocks, Map<TextRange, Block> byRange, int maxDepth,
-                         List<TextRange> statements, List<TextRange> prints, List<TextRange> comments) {
+                         List<TextRange> statements, List<TextRange> prints, List<TextRange> comments, List<SetTag> sets) {
     }
+
+    /**
+     * State of one branch. ACTIVE: the caret's branch, or certainly taken. INFERRED: taken if reached, decided by a
+     * block with the same condition.
+     */
+    private enum Branch { DEFAULT, ACTIVE, EXCLUDED, INFERRED }
 
     /** x positions (content coordinates) where connectors end, per block and tag. Depends on the font. */
     private record Layout(Model model, int spaceWidth, int textStart, float[][] tagX) {
     }
 
-    /** {@code activeBranches}: for each block enclosing the caret, the branch holding it. */
-    private record Result(Model model, Map<Block, Integer> activeBranches, @Nullable Block matched) {
+    /**
+     * {@code states}: branch states of every block that is not entirely DEFAULT. {@code conditions}: condition texts
+     * to highlight (the deciding one and the decided one).
+     */
+    private record Result(Model model, Map<Block, Branch[]> states, @Nullable Block matched, List<TextRange> conditions) {
     }
 
     private enum Style {
-        DEFAULT(TwigBlockTreeColors.DEFAULT, DOT),
-        ACTIVE(TwigBlockTreeColors.ACTIVE, DOT_ACTIVE),
-        EXCLUDED(TwigBlockTreeColors.OPPOSITE, DOT);
+        DEFAULT(TwigArcsColors.DEFAULT, DOT, DOT_GAP, false),
+        ACTIVE(TwigArcsColors.ACTIVE, DOT_ACTIVE, DOT_GAP_ACTIVE, false),
+        EXCLUDED(TwigArcsColors.OPPOSITE, DOT, DOT_GAP, false),
+        /** Taken if reached: every other dot in the DEFAULT color and size (taken, but maybe never reached). */
+        INFERRED(TwigArcsColors.INFERRED, DOT_ACTIVE, DOT_GAP_ACTIVE, true);
 
         final ColorKey key;
         final float dot;
+        final float gap;
+        final boolean alternating;
 
-        Style(ColorKey key, float dot) {
+        Style(ColorKey key, float dot, float gap, boolean alternating) {
             this.key = key;
             this.dot = dot;
+            this.gap = gap;
+            this.alternating = alternating;
         }
     }
 
@@ -178,7 +209,7 @@ final class TwigBlockTreeHighlighter {
         /** Model being painted (UI thread only). */
         @Nullable Model applied;
         @Nullable Layout layout;
-        volatile Map<Block, Integer> activeBranches = Map.of();
+        volatile Map<Block, Branch[]> states = Map.of();
         /** x of the gutter's left free painters area, in gutter coordinates; reported by {@link AreaProbe}. */
         int leftAreaX = -1;
 
@@ -192,7 +223,7 @@ final class TwigBlockTreeHighlighter {
         int reservedWidth = -1;
     }
 
-    private TwigBlockTreeHighlighter() {
+    private TwigArcsHighlighter() {
     }
 
     static void schedule(@NotNull Editor editor, @NotNull Disposable parent) {
@@ -246,27 +277,167 @@ final class TwigBlockTreeHighlighter {
             caretTag = findEnclosingTag(before);
         }
 
-        // Every block whose range contains the caret, including caret positions in the HTML between its tags.
-        Map<Block, Integer> active = new HashMap<>();
-        for (Block block : model.blocks()) {
-            TextRange r = block.range();
-            if (r.getStartOffset() <= offset && offset <= r.getEndOffset()) {
-                active.put(block, block.branchAt(offset));
-            }
-        }
+        List<TextRange> conditions = new ArrayList<>();
+        Map<Block, Branch[]> states = branchStates(model, offset, conditions);
 
         Block matched = null;
         if (caretTag != null) {
             PsiElement owner = caretTag.getParent();
-            if (owner != null && isBranchStatement(owner)) {
-                owner = owner.getParent(); // {% else %} -> ELSE_STATEMENT -> IF_STATEMENT
+            while (owner != null && isBranchStatement(owner)) {
+                owner = owner.getParent(); // {% else %} -> ELSE_STATEMENT (-> ELSEIF_STATEMENT ...) -> IF_STATEMENT
             }
             Block block = owner == null ? null : model.byRange().get(owner.getTextRange());
             if (block != null && block.tags().contains(caretTag.getTextRange())) {
                 matched = block; // only when the caret is on one of the block's own tags, not e.g. an {% include %}
             }
         }
-        return new Result(model, active, matched);
+        return new Result(model, states, matched, conditions);
+    }
+
+    /**
+     * Branch states: blocks around the caret get ACTIVE/EXCLUDED. Their if/elseif conditions become facts (earlier
+     * conditions false, the caret's one true), which decide other if blocks with the same condition, branch by branch:
+     * known true = INFERRED (taken if reached) and the rest EXCLUDED, known false = EXCLUDED, unknown = stop.
+     * EXCLUDED stays valid under an undecided parent; INFERRED only means "taken if the code gets there".
+     * Facts only apply within the same {% for %} loop and not across a {% set %} of a variable in the condition.
+     * Blocks inside an EXCLUDED branch are unreachable: all EXCLUDED. Finally, INFERRED becomes ACTIVE (certainly
+     * taken) where the block always runs together with the caret's line, see {@link #certainlyReached}.
+     */
+    private static Map<Block, Branch[]> branchStates(Model model, int offset, List<TextRange> conditions) {
+        List<Block> blocks = model.blocks();
+        Map<Block, Branch[]> states = new HashMap<>();
+        record Fact(Cond cond, boolean value, Block source) {
+        }
+        List<Fact> facts = new ArrayList<>();
+
+        for (Block b : blocks) {
+            TextRange r = b.range();
+            if (r.getStartOffset() > offset || offset > r.getEndOffset()) {
+                continue;
+            }
+            int active = b.branchAt(offset);
+            Branch[] st = new Branch[b.branchCount()];
+            for (int i = 0; i < st.length; i++) {
+                st[i] = i == active ? Branch.ACTIVE : Branch.EXCLUDED;
+            }
+            states.put(b, st);
+            if (b.kind() == Kind.IF) {
+                for (int i = 0; i <= active; i++) {
+                    Cond c = b.conds().get(i);
+                    if (c != null) {
+                        facts.add(new Fact(c, (i == active) != c.negated(), b));
+                    }
+                }
+            }
+        }
+
+        if (!facts.isEmpty()) {
+            for (Block b : blocks) {
+                if (b.kind() != Kind.IF || states.containsKey(b)) {
+                    continue;
+                }
+                Branch[] st = new Branch[b.branchCount()];
+                java.util.Arrays.fill(st, Branch.DEFAULT);
+                boolean decided = false;
+                for (int i = 0; i < st.length; i++) {
+                    Cond c = b.conds().get(i);
+                    Boolean value = null;
+                    if (c == null) {
+                        value = true; // else: taken when all earlier branches are ruled out
+                    } else {
+                        for (Fact f : facts) {
+                            if (f.cond().base().equals(c.base())
+                                    && f.source().loop() == b.loop()
+                                    && !setBetween(model, c.base(), f.source().range().getStartOffset(), b.range().getStartOffset())) {
+                                value = f.value() != c.negated();
+                                conditions.add(f.cond().range());
+                                conditions.add(c.range());
+                                break;
+                            }
+                        }
+                    }
+                    if (value == null) {
+                        break;
+                    }
+                    decided = true;
+                    if (value) {
+                        st[i] = Branch.INFERRED;
+                        for (int j = i + 1; j < st.length; j++) {
+                            st[j] = Branch.EXCLUDED;
+                        }
+                        break;
+                    }
+                    st[i] = Branch.EXCLUDED;
+                }
+                if (decided) {
+                    states.put(b, st);
+                }
+            }
+        }
+
+        // Unreachable: inside an EXCLUDED branch of the parent (pre-order: parents are final before children).
+        for (Block b : blocks) {
+            if (b.parent() < 0) {
+                continue;
+            }
+            Block p = blocks.get(b.parent());
+            Branch[] ps = states.get(p);
+            if (ps != null && ps[p.branchAt(b.range().getStartOffset())] == Branch.EXCLUDED) {
+                Branch[] st = new Branch[b.branchCount()];
+                java.util.Arrays.fill(st, Branch.EXCLUDED);
+                states.put(b, st);
+            }
+        }
+
+        // Certainly taken (pre-order: parents are upgraded before their children are checked).
+        for (Block b : blocks) {
+            Branch[] st = states.get(b);
+            if (st == null) {
+                continue;
+            }
+            for (int i = 0; i < st.length; i++) {
+                if (st[i] == Branch.INFERRED && certainlyReached(blocks, states, b, offset)) {
+                    st[i] = Branch.ACTIVE;
+                }
+            }
+        }
+        return states;
+    }
+
+    /**
+     * Whether the code always reaches {@code b} when it reaches the caret's line: going up, every enclosing block
+     * is an if whose branch around it is ACTIVE (certainly taken), up to the top level or to the first block that
+     * contains the caret, whose branch around it must be the caret's branch. An undecided if, or a for / block /
+     * macro without the caret (may run zero times, be overridden, never be called) makes it uncertain.
+     */
+    private static boolean certainlyReached(List<Block> blocks, Map<Block, Branch[]> states, Block b, int offset) {
+        for (Block c = b; c.parent() >= 0; ) {
+            Block p = blocks.get(c.parent());
+            Branch[] ps = states.get(p);
+            boolean taken = ps != null && ps[p.branchAt(c.range().getStartOffset())] == Branch.ACTIVE;
+            TextRange r = p.range();
+            if (r.getStartOffset() <= offset && offset <= r.getEndOffset()) {
+                return taken;
+            }
+            if (p.kind() != Kind.IF || !taken) {
+                return false;
+            }
+            c = p;
+        }
+        return true;
+    }
+
+    /** Whether a {% set %} of a variable used in {@code condition} lies between the two offsets. */
+    private static boolean setBetween(Model model, String condition, int a, int b) {
+        int from = Math.min(a, b);
+        int to = Math.max(a, b);
+        for (SetTag set : model.sets()) {
+            if (set.offset() > from && set.offset() < to
+                    && java.util.regex.Pattern.compile("\\b" + java.util.regex.Pattern.quote(set.name()) + "\\b").matcher(condition).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Model buildModel(PsiFile twig, Document document, long stamp) {
@@ -274,18 +445,21 @@ final class TwigBlockTreeHighlighter {
         List<TextRange> statements = new ArrayList<>();
         List<TextRange> prints = new ArrayList<>();
         List<TextRange> comments = new ArrayList<>();
-        walk(twig, -1, 0, document, blocks, statements, prints, comments);
+        List<SetTag> sets = new ArrayList<>();
+        walk(twig, -1, -1, 0, document, blocks, statements, prints, comments, sets);
         Map<TextRange, Block> byRange = new HashMap<>();
         int maxDepth = 0;
         for (Block b : blocks) {
             byRange.put(b.range(), b);
             maxDepth = Math.max(maxDepth, b.depth());
         }
-        return new Model(stamp, blocks, byRange, maxDepth, statements, prints, comments);
+        return new Model(stamp, blocks, byRange, maxDepth, statements, prints, comments, sets);
     }
 
-    private static void walk(PsiElement parent, int parentIndex, int depth, Document doc, List<Block> blocks,
-                             List<TextRange> statements, List<TextRange> prints, List<TextRange> comments) {
+    private static final java.util.regex.Pattern SET_NAME = java.util.regex.Pattern.compile("^\\{%-?\\s*set\\s+(\\w+)");
+
+    private static void walk(PsiElement parent, int parentIndex, int loopIndex, int depth, Document doc, List<Block> blocks,
+                             List<TextRange> statements, List<TextRange> prints, List<TextRange> comments, List<SetTag> sets) {
         for (PsiElement c = parent.getFirstChild(); c != null; c = c.getNextSibling()) {
             if (c.getFirstChild() == null) {
                 continue; // leaf
@@ -297,13 +471,20 @@ final class TwigBlockTreeHighlighter {
                 comments.add(c.getTextRange());
             } else if (isTag(c)) {
                 statements.add(c.getTextRange());
+                if (type == TwigElementTypes.SET_TAG) {
+                    java.util.regex.Matcher m = SET_NAME.matcher(c.getText());
+                    if (m.find()) {
+                        sets.add(new SetTag(c.getTextRange().getStartOffset(), m.group(1)));
+                    }
+                }
             }
-            Block block = toBlock(c, parentIndex, depth, doc);
+            Block block = toBlock(c, parentIndex, loopIndex, depth, doc);
             if (block != null) {
                 blocks.add(block);
-                walk(c, blocks.size() - 1, depth + 1, doc, blocks, statements, prints, comments);
+                int index = blocks.size() - 1;
+                walk(c, index, block.kind() == Kind.FOR ? index : loopIndex, depth + 1, doc, blocks, statements, prints, comments, sets);
             } else {
-                walk(c, parentIndex, depth, doc, blocks, statements, prints, comments);
+                walk(c, parentIndex, loopIndex, depth, doc, blocks, statements, prints, comments, sets);
             }
         }
     }
@@ -346,7 +527,7 @@ final class TwigBlockTreeHighlighter {
      * an else/elseif (first child of an ELSE_STATEMENT / ELSEIF_STATEMENT child) or a structural end tag.
      * Single-tag statements like {% set x = 1 %} are not blocks.
      */
-    private static @Nullable Block toBlock(@NotNull PsiElement e, int parentIndex, int depth, Document doc) {
+    private static @Nullable Block toBlock(@NotNull PsiElement e, int parentIndex, int loopIndex, int depth, Document doc) {
         if (e instanceof PsiFile || isTag(e) || isBranchStatement(e)) {
             return null;
         }
@@ -355,14 +536,10 @@ final class TwigBlockTreeHighlighter {
             return null;
         }
         List<TextRange> tags = new ArrayList<>();
+        List<Cond> conds = new ArrayList<>();
         tags.add(opener.getTextRange());
-        for (PsiElement child = opener.getNextSibling(); child != null; child = child.getNextSibling()) {
-            if (isBranchStatement(child) && child.getFirstChild() != null && isTag(child.getFirstChild())) {
-                tags.add(child.getFirstChild().getTextRange());
-            } else if (isEndTag(child)) {
-                tags.add(child.getTextRange());
-            }
-        }
+        conds.add(condition(opener));
+        collectBlockTags(opener.getNextSibling(), tags, conds);
         if (tags.size() < 2) {
             return null;
         }
@@ -371,7 +548,117 @@ final class TwigBlockTreeHighlighter {
         for (int i = 0; i < tagLines.length; i++) {
             tagLines[i] = doc.getLineNumber(Math.min(tags.get(i).getStartOffset(), length));
         }
-        return new Block(e.getTextRange(), parentIndex, depth, tags, tagLines);
+        IElementType type = e.getNode().getElementType();
+        Kind kind = type == TwigElementTypes.IF_STATEMENT ? Kind.IF : type == TwigElementTypes.FOR_STATEMENT ? Kind.FOR : Kind.OTHER;
+        return new Block(e.getTextRange(), parentIndex, depth, loopIndex, kind, tags, tagLines, conds);
+    }
+
+    /**
+     * Adds the else/elseif tags and the end tag found among {@code first} and its next siblings, in document order.
+     * Branch statements can be nested: the Twig parser ends an ELSEIF_STATEMENT only at the end tag, so in
+     * if/elseif/elseif/else the following elseif and else statements are children of the first ELSEIF_STATEMENT.
+     */
+    private static void collectBlockTags(@Nullable PsiElement first, List<TextRange> tags, List<Cond> conds) {
+        for (PsiElement child = first; child != null; child = child.getNextSibling()) {
+            if (isBranchStatement(child) && child.getFirstChild() != null && isTag(child.getFirstChild())) {
+                PsiElement tag = child.getFirstChild();
+                tags.add(tag.getTextRange());
+                conds.add(condition(tag));
+                collectBlockTags(tag.getNextSibling(), tags, conds);
+            } else if (isEndTag(child)) {
+                tags.add(child.getTextRange());
+                conds.add(null);
+            }
+        }
+    }
+
+    /** Condition of an if/elseif tag: the text between the tag name and "%}", normalized; null for other tags. */
+    private static @Nullable Cond condition(@NotNull PsiElement tag) {
+        IElementType type = tag.getNode().getElementType();
+        if (type != TwigElementTypes.IF_TAG && type != TwigElementTypes.ELSEIF_TAG) {
+            return null;
+        }
+        int start = -1;
+        int end = -1;
+        boolean afterName = false;
+        for (ASTNode n = tag.getNode().getFirstChildNode(); n != null; n = n.getTreeNext()) {
+            IElementType t = n.getElementType();
+            if (t == TwigTokenTypes.TAG_NAME) {
+                afterName = true;
+            } else if (t == TwigTokenTypes.STATEMENT_BLOCK_END) {
+                break;
+            } else if (afterName && !n.getText().isBlank()) {
+                if (start < 0) {
+                    start = n.getStartOffset();
+                }
+                end = n.getStartOffset() + n.getTextLength();
+            }
+        }
+        if (start < 0) {
+            return null;
+        }
+        TextRange range = new TextRange(start, end);
+        String text = range.substring(tag.getContainingFile().getText()).trim().replaceAll("\\s+", " ");
+        boolean negated = false;
+        text = stripParens(text);
+        while (text.startsWith("not ")) {
+            String rest = text.substring(4).trim();
+            String operand = rest;
+            while (operand.startsWith("not ")) {
+                operand = operand.substring(4).trim();
+            }
+            if (!isSingleOperand(operand)) {
+                break; // "not a and b" is "(not a) and b": keep it as an opaque condition
+            }
+            negated = !negated;
+            text = stripParens(rest);
+        }
+        return new Cond(text, negated, range);
+    }
+
+    /** Removes parentheses that wrap the whole text: "(a and b)" -> "a and b". */
+    private static String stripParens(String s) {
+        while (s.startsWith("(") && s.endsWith(")") && closingParen(s) == s.length() - 1) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s;
+    }
+
+    /** Index of the parenthesis that closes the one at index 0, or -1. */
+    private static int closingParen(String s) {
+        int depth = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')' && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** No space outside brackets and quotes, e.g. "user.roles[0]" or "is_granted('ROLE_ADMIN')". */
+    private static boolean isSingleOperand(String s) {
+        int depth = 0;
+        char quote = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+            } else if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '(' || c == '[' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth--;
+            } else if (c == ' ' && depth == 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---------------------------------------------------------------- apply (UI thread)
@@ -385,7 +672,7 @@ final class TwigBlockTreeHighlighter {
         if (result == null) {
             disposeAll(state.backgrounds);
             state.applied = null;
-            state.activeBranches = Map.of();
+            state.states = Map.of();
             reserveWidth(editor, state, parent, 0);
             repaint(editor);
             return;
@@ -397,28 +684,40 @@ final class TwigBlockTreeHighlighter {
         if (state.applied != result.model()) {
             Model model = result.model();
             disposeAll(state.backgrounds);
-            addAll(markup, state.backgrounds, model.statements(), TwigBlockTreeColors.STATEMENT_BACKGROUND, BACKGROUND_LAYER, length);
-            addAll(markup, state.backgrounds, model.prints(), TwigBlockTreeColors.PRINT_BACKGROUND, BACKGROUND_LAYER, length);
-            addAll(markup, state.backgrounds, model.comments(), TwigBlockTreeColors.COMMENT_BACKGROUND, BACKGROUND_LAYER, length);
+            addAll(markup, state.backgrounds, model.statements(), TwigArcsColors.STATEMENT_BACKGROUND, BACKGROUND_LAYER, length);
+            addAll(markup, state.backgrounds, model.prints(), TwigArcsColors.PRINT_BACKGROUND, BACKGROUND_LAYER, length);
+            addAll(markup, state.backgrounds, model.comments(), TwigArcsColors.COMMENT_BACKGROUND, BACKGROUND_LAYER, length);
             state.applied = model;
             reserveWidth(editor, state, parent, model.blocks().isEmpty() ? 0 : PAD_LEFT + model.maxDepth() * NEST_STEP + 2);
         }
-        state.activeBranches = result.activeBranches();
+        state.states = result.states();
 
         Block matched = result.matched();
         if (matched != null) {
-            addAll(markup, state.caretHighlighters, matched.tags(), TwigBlockTreeColors.MATCHED_TAG, LAYER, length);
+            addAll(markup, state.caretHighlighters, matched.tags(), TwigArcsColors.MATCHED_TAG, LAYER, length);
         }
-        for (Map.Entry<Block, Integer> e : result.activeBranches().entrySet()) {
+        addAll(markup, state.caretHighlighters, result.conditions(), TwigArcsColors.MATCHED_CONDITION, LAYER, length);
+
+        // Grey out excluded branches (not again inside a branch that is already greyed).
+        List<Block> blocks = result.model().blocks();
+        List<TextRange> excluded = new ArrayList<>();
+        for (Map.Entry<Block, Branch[]> e : result.states().entrySet()) {
             Block block = e.getKey();
-            List<TextRange> excluded = new ArrayList<>();
-            for (int branch = 0; branch < block.branchCount(); branch++) {
-                if (branch != e.getValue()) {
+            if (block.parent() >= 0) {
+                Block p = blocks.get(block.parent());
+                Branch[] ps = result.states().get(p);
+                if (ps != null && ps[p.branchAt(block.range().getStartOffset())] == Branch.EXCLUDED) {
+                    continue;
+                }
+            }
+            Branch[] st = e.getValue();
+            for (int branch = 0; branch < st.length; branch++) {
+                if (st[branch] == Branch.EXCLUDED) {
                     excluded.add(block.branchContent(branch));
                 }
             }
-            addAll(markup, state.caretHighlighters, excluded, TwigBlockTreeColors.EXCLUDED_TEXT, EXCLUDED_TEXT_LAYER, length);
         }
+        addAll(markup, state.caretHighlighters, excluded, TwigArcsColors.EXCLUDED_TEXT, EXCLUDED_TEXT_LAYER, length);
 
         repaint(editor);
     }
@@ -470,7 +769,7 @@ final class TwigBlockTreeHighlighter {
         }
         state.reservedWidth = width;
         if (width > 0) {
-            Disposable reservation = Disposer.newDisposable(parent, "TwigBlockTree gutter width");
+            Disposable reservation = Disposer.newDisposable(parent, "TwigArcs gutter width");
             ex.getGutterComponentEx().reserveLeftFreePaintersAreaWidth(reservation, width);
             state.widthReservation = reservation;
         }
@@ -555,7 +854,7 @@ final class TwigBlockTreeHighlighter {
         Document doc = editor.getDocument();
         int lineCount = doc.getLineCount();
         int lineHeight = editor.getLineHeight();
-        Map<Block, Integer> active = state.activeBranches;
+        Map<Block, Branch[]> states = state.states;
         List<Block> blocks = layout.model().blocks();
         float[][] lefts = new float[blocks.size()][];
         List<Curve> curves = new ArrayList<>();
@@ -578,7 +877,7 @@ final class TwigBlockTreeHighlighter {
             for (int k = 0; k < lines.length; k++) {
                 ys[k] = editor.logicalPositionToXY(new LogicalPosition(lines[k], 0)).y + lineHeight / 2f;
             }
-            Integer activeBranch = active.get(b);
+            Branch[] st = states.get(b);
 
             if (b.isSingleLine()) {
                 float q = lineHeight / 4f;
@@ -586,7 +885,7 @@ final class TwigBlockTreeHighlighter {
                 Path2D path = new Path2D.Float();
                 path.moveTo(x, ys[0] - q);
                 lefts[i] = new float[]{appendCurve(path, x, ys[0] - q, ys[0] + q, limit)};
-                curves.add(new Curve(path, style(activeBranch, activeBranch != null ? activeBranch : 0), ys[0] - q, ys[0] + q));
+                curves.add(new Curve(path, singleLineStyle(st), ys[0] - q, ys[0] + q));
                 continue;
             }
 
@@ -598,7 +897,7 @@ final class TwigBlockTreeHighlighter {
                 path.lineTo(x, ys[k]);
                 lefts[i][k] = appendCurve(path, x, ys[k], ys[k + 1], limit);
                 path.lineTo(tx[k + 1], ys[k + 1]);
-                curves.add(new Curve(path, style(activeBranch, k), ys[k], ys[k + 1]));
+                curves.add(new Curve(path, st == null ? Style.DEFAULT : style(st[k]), ys[k], ys[k + 1]));
             }
         }
         return curves;
@@ -633,8 +932,31 @@ final class TwigBlockTreeHighlighter {
         return m;
     }
 
-    private static Style style(@Nullable Integer activeBranch, int branch) {
-        return activeBranch == null ? Style.DEFAULT : activeBranch == branch ? Style.ACTIVE : Style.EXCLUDED;
+    private static Style style(Branch branch) {
+        return switch (branch) {
+            case DEFAULT -> Style.DEFAULT;
+            case ACTIVE -> Style.ACTIVE;
+            case EXCLUDED -> Style.EXCLUDED;
+            case INFERRED -> Style.INFERRED;
+        };
+    }
+
+    /** A single-line block has one curve for all its branches. */
+    private static Style singleLineStyle(Branch @Nullable [] st) {
+        if (st == null) {
+            return Style.DEFAULT;
+        }
+        boolean allExcluded = true;
+        for (Branch b : st) {
+            if (b == Branch.ACTIVE) {
+                return Style.ACTIVE;
+            }
+            if (b == Branch.INFERRED) {
+                return Style.INFERRED;
+            }
+            allExcluded &= b == Branch.EXCLUDED;
+        }
+        return allExcluded ? Style.EXCLUDED : Style.DEFAULT;
     }
 
     // ---------------------------------------------------------------- painting
@@ -651,30 +973,68 @@ final class TwigBlockTreeHighlighter {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
             g2.translate(dx, 0);
-            Map<Style, BasicStroke> strokes = new HashMap<>();
             for (Curve curve : curves) {
                 if (clip != null && (curve.bottom() < clip.y - 4 || curve.top() > clip.y + clip.height + 4)) {
                     continue;
                 }
-                Color color = editor.getColorsScheme().getColor(curve.style().key);
+                Style style = curve.style();
+                Color color = editor.getColorsScheme().getColor(style.key);
                 if (color == null) {
                     continue;
                 }
-                g2.setColor(color);
-                g2.setStroke(strokes.computeIfAbsent(curve.style(), TwigBlockTreeHighlighter::dotStroke));
-                g2.draw(curve.path());
+                float dot = JBUI.scale(style.dot);
+                float period = dot + JBUI.scale(style.gap);
+                Color altColor = style.alternating ? editor.getColorsScheme().getColor(Style.DEFAULT.key) : null;
+                paintDots(g2, curve.path(), period, dot, color, JBUI.scale(Style.DEFAULT.dot), altColor);
             }
         } finally {
             g2.dispose();
         }
     }
 
-    /** Round dots: (almost) zero-length dashes with round caps, one dot diameter wide. */
-    private static BasicStroke dotStroke(Style style) {
-        float dot = JBUI.scale(style.dot);
-        float period = dot + JBUI.scale(DOT_GAP);
-        return new BasicStroke(dot, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f,
-                new float[]{0.01f, period - 0.01f}, 0f);
+    /**
+     * Places round dots along the path, {@code period} apart, starting at its first point. The same path gives the
+     * same dots in the text area and in the gutter, so the two halves line up. With {@code altColor}, every other
+     * dot is drawn in that color and {@code altDot} size instead.
+     */
+    private static void paintDots(Graphics2D g, Path2D path, float period, float dot, Color color,
+                                  float altDot, @Nullable Color altColor) {
+        g.setColor(color);
+        int index = 0;
+        float[] c = new float[6];
+        float px = 0;
+        float py = 0;
+        float next = 0; // distance along the path to the next dot
+        for (PathIterator it = path.getPathIterator(null, 0.2); !it.isDone(); it.next()) {
+            int type = it.currentSegment(c);
+            if (type == PathIterator.SEG_MOVETO) {
+                px = c[0];
+                py = c[1];
+                continue;
+            }
+            if (type != PathIterator.SEG_LINETO) {
+                continue;
+            }
+            float sx = c[0] - px;
+            float sy = c[1] - py;
+            float length = (float) Math.hypot(sx, sy);
+            while (next <= length) {
+                float t = length == 0 ? 0 : next / length;
+                float x = px + sx * t;
+                float y = py + sy * t;
+                float d = dot;
+                if (altColor != null) {
+                    boolean alt = index++ % 2 == 1;
+                    g.setColor(alt ? altColor : color);
+                    d = alt ? altDot : dot;
+                }
+                g.fill(new Ellipse2D.Float(x - d / 2, y - d / 2, d, d));
+                next += period;
+            }
+            next -= length;
+            px = c[0];
+            py = c[1];
+        }
     }
 
     /** Paints the curves in the text area. */

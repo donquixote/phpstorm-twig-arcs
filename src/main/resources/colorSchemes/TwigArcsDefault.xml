@@ -1,0 +1,12 @@
+<list>
+  <option name="TWIG_ARCS_STATEMENT_BACKGROUND">
+    <value>
+      <option name="BACKGROUND" value="eef1f8"/>
+    </value>
+  </option>
+  <option name="TWIG_ARCS_MATCHED_CONDITION">
+    <value>
+      <option name="BACKGROUND" value="fff0b3"/>
+    </value>
+  </option>
+</list>

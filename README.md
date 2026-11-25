@@ -1,4 +1,4 @@
-# Twig Block Tree (PhpStorm plugin)
+# Twig Arcs (PhpStorm plugin)
 
 Shows the Twig block structure around the caret, similar to PhpStorm's HTML tag tree highlighting:
 
@@ -20,7 +20,7 @@ Requirements: Linux/macOS/Windows with internet access. A JDK 21 is downloaded a
 ```
 
 The first run downloads Gradle and PhpStorm 2026.1.4 (~1 GB, needed to compile against), so it takes a while.
-The result is `build/distributions/twig-block-tree-0.1.0.zip`.
+The result is `build/distributions/twigarcs-0.1.0.zip`.
 
 To try it in a separate sandbox PhpStorm instead of your real one:
 
@@ -34,14 +34,14 @@ Settings → Plugins → ⚙ → *Install Plugin from Disk…* → choose the zi
 
 ## Configure colors
 
-Settings → Editor → Color Scheme → **Twig Block Tree**:
+Settings → Editor → Color Scheme → **Twig Arcs**:
 
 - *Gutter bar / Level 1–6*: colors per nesting depth (deeper levels cycle).
 - *Matching tags of the block under the caret*: defaults to the "matched brace" style.
 
 ## Tweaks in the code
 
-In `TwigBlockTreeHighlighter.java`:
+In `TwigArcsHighlighter.java`:
 
 - `BAR_X_OFFSET`, `BAR_WIDTH`: where and how wide the gutter bar is drawn.
 - `tagHighlightRange()`: which part of a tag is highlighted (currently `{% if`, not the whole tag).

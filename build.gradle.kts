@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.intellij.platform")
 }
 
-group = "twigblocktree"
+group = "io.github.donquixote"
 version = "0.1.0"
 
 java {

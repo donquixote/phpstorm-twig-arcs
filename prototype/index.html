@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Twig Block Tree – design prototype</title>
+<title>Twig Arcs – design prototype</title>
 <style>
   :root { color-scheme: light; }
   body { font: 13px system-ui, sans-serif; margin: 0; display: flex; gap: 16px; padding: 16px; background: #eceef1; color: #222; }
@@ -27,7 +27,7 @@
 </head>
 <body>
 <div id="panel">
-  <h1>Twig Block Tree – prototype</h1>
+  <h1>Twig Arcs – prototype</h1>
   <div id="controls"></div>
   <button id="reset">Reset settings</button>
 </div>
@@ -81,6 +81,34 @@ const SAMPLE = `{# Drupal-style template #}
   title: node.label,
   url: url
 }) }}
+{# Same condition in several blocks #}
+{% if french %}
+  <p>Bonjour</p>
+{% else %}
+  <p>Hello</p>
+{% endif %}
+{% if logged_in %}
+  {% if french %}
+    <p>Au revoir</p>
+  {% else %}
+    <p>Bye</p>
+  {% endif %}
+{% endif %}
+{% if not   french %}
+  <p>English footer</p>
+{% endif %}
+{% set french = false %}
+{% if french %}
+  <p>After the set: undecided</p>
+{% endif %}
+{% for item in items %}
+  {% if item.active %}
+    <b>{{ item.name }}</b>
+  {% endif %}
+  {% if item.active %}
+    <i>Same iteration: decided</i>
+  {% endif %}
+{% endfor %}
 {% endblock %}
 `;
 
@@ -95,9 +123,10 @@ const DEFAULTS = {
   bracketShape: 'curved',
   curveMode: 'per branch',
   curveWidth: 1.5,
-  curveWidthActive: 2,
+  curveWidthActive: 2.5,
   curveLine: 'dotted',
-  curveDotGap: 3,
+  curveDotGap: 2.5,
+  curveDotGapActive: 1.5,
   padLeft: 1,
   lineWidth: 1,
   columnStep: 3,
@@ -133,14 +162,22 @@ const DEFAULTS = {
   bgPrints: false,
   bgComments: false,
   tagBgRounded: true,
+  // condition inference
+  infer: true,
+  inferTakenStyle: 'alternating green / blue',
+  inferCertain: true,
+  inferGrey: true,
+  inferSameLoop: true,
+  inferSetBreaks: true,
+  highlightCond: true,
   // realism
   indentGuides: true,
   indentUnit: 2,
   foldArrows: true,
   breakpoint: true,
   colors: {
-    light: { def: '#7b8fe6', act: '#2da44e', exc: '#e5484d', tagBg: '#eef1f8', printBg: '#f3eef8', commentBg: '#f2f2f2', matched: '#c7e3ff' },
-    dark:  { def: '#6878c8', act: '#4ebe6a', exc: '#f06a6a', tagBg: '#272b34', printBg: '#2d2833', commentBg: '#292a2d', matched: '#2f4a6a' },
+    light: { def: '#7b8fe6', act: '#2da44e', exc: '#e5484d', tagBg: '#eef1f8', printBg: '#f3eef8', commentBg: '#f2f2f2', matched: '#c7e3ff', cond: '#fff0b3' },
+    dark:  { def: '#6878c8', act: '#4ebe6a', exc: '#f06a6a', tagBg: '#272b34', printBg: '#2d2833', commentBg: '#292a2d', matched: '#2f4a6a', cond: '#4a4220' },
   },
 };
 
@@ -158,6 +195,7 @@ const CONTROLS = [
     ['curveWidthActive', '… for the caret\'s branch', 'range', 1, 4, 0.5],
     ['curveLine', 'Curve line', 'select', ['dotted', 'solid']],
     ['curveDotGap', 'Space between dots', 'range', 1, 8, 0.5],
+    ['curveDotGapActive', '… for the caret\'s branch', 'range', 1, 8, 0.5],
   ]],
   ['Gutter brackets', [
     ['lineWidth', 'Line width', 'range', 1, 4, 1],
@@ -204,6 +242,15 @@ const CONTROLS = [
     ['bgComments', 'Background on {# #} comments', 'check'],
     ['tagBgRounded', 'Rounded background', 'check'],
   ]],
+  ['Condition inference', [
+    ['infer', 'Decide other blocks with the same condition', 'check'],
+    ['inferTakenStyle', '"Taken if reached" style', 'select', ['alternating green / blue', 'hollow dots', 'lighter green', 'same green']],
+    ['inferCertain', 'Certainly reached = like the caret\'s branch', 'check'],
+    ['inferGrey', 'Grey out ruled-out branches', 'check'],
+    ['inferSameLoop', 'Only within the same loop', 'check'],
+    ['inferSetBreaks', 'Stop at {% set var %}', 'check'],
+    ['highlightCond', 'Highlight the matching conditions', 'check'],
+  ]],
   ['Realism', [
     ['indentGuides', 'PhpStorm indent guides', 'check'],
     ['indentUnit', 'Indent size', 'range', 1, 8, 1],
@@ -213,11 +260,12 @@ const CONTROLS = [
   ['Colors (current theme)', [
     ['c.def', 'Block without caret', 'color'],
     ['c.act', 'Branch with caret', 'color'],
-    ['c.exc', 'Other branches', 'color'],
+    ['c.exc', 'Excluded branches', 'color'],
     ['c.tagBg', '{% %} background', 'color'],
     ['c.printBg', '{{ }} background', 'color'],
     ['c.commentBg', '{# #} background', 'color'],
     ['c.matched', 'Matching tags', 'color'],
+    ['c.cond', 'Matching conditions', 'color'],
   ]],
 ];
 
@@ -287,7 +335,7 @@ function changed() { save(); render(); }
 
 const src = document.getElementById('src');
 src.value = localStorage.getItem(STORE + '.template') || SAMPLE;
-let text, lines, lineStarts, blocks, caret = 0;
+let text, lines, lineStarts, blocks, setTags, caret = 0;
 
 function setText(t) {
   text = t.replace(/\t/g, '    ');
@@ -316,11 +364,19 @@ function parseBlocks(t) {
   const MID = new Set(['else', 'elseif', 'plural']);
   const re = /\{%-?\s*(\w+)([\s\S]*?)-?%\}/g;
   const out = [], stack = [];
+  setTags = [];
   let m;
   while ((m = re.exec(t))) {
     const name = m[1], rest = m[2];
     const nameAt = m.index + m[0].indexOf(name);
     const tag = { start: m.index, end: m.index + m[0].length, nameStart: nameAt, nameEnd: nameAt + name.length };
+    if (name === 'if' || name === 'elseif') {
+      const restAt = tag.nameEnd;
+      tag.condStart = restAt + (rest.length - rest.trimStart().length);
+      tag.condEnd = restAt + rest.trimEnd().length;
+      tag.cond = rest.trim().replace(/\s+/g, ' ');
+    }
+    if (name === 'set') setTags.push({ offset: m.index, name: (/^\s*(\w+)/.exec(rest) || [])[1] });
     if (name.startsWith('end')) {
       const open = name.slice(3);
       for (let i = stack.length - 1; i >= 0; i--) {
@@ -424,6 +480,112 @@ function render() {
   for (const b of blocks) if (b.start <= caret && caret <= b.end) active.set(b, branchAt(b, caret));
   const excluded = [];
   for (const [b, br] of active) for (let i = 0; i < b.tags.length - 1; i++) if (i !== br) excluded.push([b.tags[i].end, b.tags[i + 1].start]);
+
+  // ---- condition inference: branch states 'act' | 'exc' | 'inf' (taken if reached) | 'def'
+  const states = new Map();
+  for (const b of blocks) {
+    const nb = b.tags.length - 1;
+    states.set(b, active.has(b) ? Array.from({ length: nb }, (_, i) => i === active.get(b) ? 'act' : 'exc') : new Array(nb).fill('def'));
+  }
+  const condMarks = []; // [start, end] of condition text to highlight
+  if (S.infer) {
+    const loopOf = b => { for (let p = b.parent; p; p = p.parent) if (p.name === 'for') return p; return null; };
+    // Same rules as the plugin: "not X" only negates when X is a single operand ("not a and b" = "(not a) and b").
+    const stripParens = c => {
+      for (;;) {
+        if (!(c.startsWith('(') && c.endsWith(')'))) return c;
+        let d = 0, close = -1;
+        for (let i = 0; i < c.length; i++) { if (c[i] === '(') d++; else if (c[i] === ')' && --d === 0) { close = i; break; } }
+        if (close !== c.length - 1) return c;
+        c = c.slice(1, -1).trim();
+      }
+    };
+    const single = c => {
+      let d = 0, q = null;
+      for (const ch of c) {
+        if (q) { if (ch === q) q = null; }
+        else if (ch === "'" || ch === '"') q = ch;
+        else if ('([{'.includes(ch)) d++;
+        else if (')]}'.includes(ch)) d--;
+        else if (ch === ' ' && d === 0) return false;
+      }
+      return true;
+    };
+    const norm = c => {
+      let neg = false;
+      c = stripParens(c);
+      while (c.startsWith('not ')) {
+        const rest = c.slice(4).trim();
+        let operand = rest;
+        while (operand.startsWith('not ')) operand = operand.slice(4).trim();
+        if (!single(operand)) break;
+        neg = !neg;
+        c = stripParens(rest);
+      }
+      return { base: c, neg };
+    };
+    const facts = [];
+    for (const [b, br] of active) {
+      if (b.name !== 'if') continue;
+      for (let i = 0; i <= br; i++) {
+        const tg = b.tags[i];
+        if (!tg.cond) continue;
+        const n = norm(tg.cond);
+        facts.push({ base: n.base, value: (i === br) !== n.neg, src: b, tag: tg, loop: loopOf(b) });
+      }
+    }
+    const setBetween = (base, a, z) => setTags.some(st => st.name && st.offset > Math.min(a, z) && st.offset < Math.max(a, z)
+                                                          && new RegExp('\\b' + st.name + '\\b').test(base));
+    const lookup = (tg, target) => {
+      const n = norm(tg.cond);
+      for (const f of facts) {
+        if (f.base !== n.base) continue;
+        if (S.inferSameLoop && f.loop !== loopOf(target)) continue;
+        if (S.inferSetBreaks && setBetween(n.base, f.src.start, target.start)) continue;
+        if (S.highlightCond) condMarks.push([f.tag.condStart, f.tag.condEnd], [tg.condStart, tg.condEnd]);
+        return f.value !== n.neg;
+      }
+      return undefined;
+    };
+    for (const b of blocks) {
+      if (active.has(b) || b.name !== 'if') continue;
+      const st = states.get(b);
+      for (let i = 0; i < st.length; i++) {
+        const tg = b.tags[i];
+        const v = tg.cond ? lookup(tg, b) : true; // else: taken when all earlier branches are ruled out
+        if (v === true) { st[i] = 'inf'; for (let j = i + 1; j < st.length; j++) st[j] = 'exc'; break; }
+        if (v === false) { st[i] = 'exc'; continue; }
+        break; // unknown: the rest stays undecided
+      }
+    }
+    // "Taken if reached" becomes certainly taken when the block always runs together with the caret's line:
+    // every enclosing block also contains the caret, or is an if whose branch around it is (certainly) taken.
+    // Anything else (undecided if, for/block/macro without the caret) may not run. Pre-order: parents first.
+    if (S.inferCertain) {
+      const reached = b => {
+        for (let c = b, p = b.parent; p; c = p, p = p.parent) {
+          if (active.has(p)) return true;
+          if (p.name !== 'if' || states.get(p)[branchAt(p, c.start)] !== 'act') return false;
+        }
+        return true;
+      };
+      for (const b of blocks) {
+        const st = states.get(b);
+        const i = st.indexOf('inf');
+        if (i >= 0 && reached(b)) st[i] = 'act';
+      }
+    }
+  }
+  // blocks inside a ruled-out branch are unreachable
+  for (const b of blocks) {
+    const p = b.parent;
+    if (p && states.has(p) && states.get(p)[branchAt(p, b.start)] === 'exc') states.set(b, states.get(b).map(() => 'exc'));
+  }
+  for (const b of blocks) {
+    if (active.has(b) || !(S.inferGrey || !S.infer)) continue;
+    states.get(b).forEach((st, i) => { if (st === 'exc') excluded.push([b.tags[i].end, b.tags[i + 1].start]); });
+  }
+
   let matched = null;
   for (const b of blocks) if (b.tags.some(tg => tg.start <= caret && caret <= tg.end)) matched = b;
   if (matched && !matched.tags.some(tg => tg.start <= caret && caret <= tg.end)) matched = null;
@@ -478,11 +640,13 @@ function render() {
       spanBg(a, b, C.matched, S.tagBgRounded);
     }
   }
+  for (const [a, b] of condMarks) spanBg(a, b, C.cond, S.tagBgRounded);
 
   // ---- block area fill (under the text): per branch, from the bracket to the tag column, between connectors
   const bracketX = b => areaX + S.padLeft + b.depth * S.columnStep;
   const targetX = l => textX + Math.max(0, indentOf(l)) * cw - S.tagGap;
-  const styleOfB = (b, br) => !active.has(b) ? 'def' : active.get(b) === br ? 'act' : 'exc';
+  const styleOfB = (b, br) => { const st = states.get(b)[br]; return st === 'inf' ? 'act' : st; };
+  const stateOfB = (b, br) => states.get(b)[br];
   if (S.blockFill && S.bracketShape !== 'curved') {
     for (const b of blocks) {
       const tl = b.tagLines, n = tl.length;
@@ -651,14 +815,24 @@ function render() {
   // ---- curved brackets: half circle if it fits, else vertical line with quarter circles
   function drawCurves() {
     const leftmost = new Map();
+    let hollow = false, alternate = 0;
     const strokeStyle = style => {
-      ctx.strokeStyle = C[style];
-      const w = style === 'act' ? S.curveWidthActive : S.curveWidth;
+      hollow = style === 'inf' && S.inferTakenStyle === 'hollow dots';
+      alternate = 0;
+      const color = style === 'inf' ? C.act : C[style];
+      ctx.strokeStyle = style === 'inf' && S.inferTakenStyle === 'lighter green' ? hexA(color, 0.45) : color;
+      const w = style === 'act' || style === 'inf' ? S.curveWidthActive : S.curveWidth;
       ctx.lineWidth = w;
       if (S.curveLine === 'dotted') {
         // zero-length dashes with round caps = round dots, one line width across
         ctx.lineCap = 'round';
-        ctx.setLineDash([0, w + S.curveDotGap]);
+        const period = w + (style === 'act' || style === 'inf' ? S.curveDotGapActive : S.curveDotGap);
+        ctx.setLineDash([0, period]);
+        // every other dot in the "no caret" color: taken (green), but unknown whether reached (blue)
+        if (style === 'inf' && S.inferTakenStyle === 'alternating green / blue') {
+          alternate = period;
+          ctx.setLineDash([0, 2 * period]);
+        }
       } else {
         ctx.lineCap = 'butt';
         ctx.setLineDash(style === 'def' && S.defaultStyle === 'dashed' ? [S.dash, S.dashGap] : []);
@@ -680,10 +854,30 @@ function render() {
         ctx.beginPath();
         if (p.x !== undefined) { ctx.moveTo(p.x, a); ctx.lineTo(p.x, b); }
         else if (p.r > 0) ctx.arc(p.cx, p.cy, p.r, theta(p, a), theta(p, b), true);
-        ctx.stroke();
+        stroke();
       }
     };
-    const hstroke = (x0, x1, y) => { if (x1 > x0 + 0.5) { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); } };
+    const hstroke = (x0, x1, y) => { if (x1 > x0 + 0.5) { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); stroke(); } };
+    // Hollow dots: stroke the same dots again, thinner, in the background color (same period = same centers).
+    function stroke() {
+      ctx.stroke();
+      if (alternate) {
+        // blue dots also in the "no caret" size; dot centers stay on the same grid
+        const saved = [ctx.strokeStyle, ctx.lineWidth];
+        ctx.strokeStyle = C.def;
+        ctx.lineWidth = S.curveWidth;
+        ctx.lineDashOffset = alternate;
+        ctx.stroke();
+        ctx.lineDashOffset = 0;
+        [ctx.strokeStyle, ctx.lineWidth] = saved;
+      }
+      if (!hollow) return;
+      const saved = [ctx.strokeStyle, ctx.lineWidth];
+      ctx.strokeStyle = T.bg;
+      ctx.lineWidth = saved[1] * 0.45;
+      ctx.stroke();
+      [ctx.strokeStyle, ctx.lineWidth] = saved;
+    }
 
     // Shape between two tag lines: half circle if it fits left of tx, else vertical line + quarter circles.
     const shape = (tx, y0, y1, limit) => {
@@ -713,7 +907,7 @@ function render() {
         const m = midY(tl[0]) + 0.5, q = Math.floor(lh / 4);
         const sh = shape(Math.min(...targets), m - q, m + q, limit);
         leftmost.set(b, [sh.left]);
-        strokeStyle(styleOfB(b, branchAt(b, caret)));
+        strokeStyle(active.has(b) ? 'act' : states.get(b).includes('inf') ? 'inf' : states.get(b).every(x => x === 'exc') ? 'exc' : 'def');
         strokeRange(sh.pieces, m - q, m + q);
         continue;
       }
@@ -723,7 +917,7 @@ function render() {
         const sh = shape(tx, ys[0], ys[n - 1], limit);
         leftmost.set(b, tl.slice(1).map(() => sh.left));
         for (let k = 0; k < n; k++) {
-          strokeStyle(styleOfB(b, Math.min(k, n - 2)));
+          strokeStyle(stateOfB(b, Math.min(k, n - 2)));
           if (k + 1 < n) strokeRange(sh.pieces, ys[k], ys[k + 1]);
           hstroke(k === 0 || k === n - 1 ? tx : xAt(sh.pieces, ys[k]), targets[k], ys[k]);
         }
@@ -736,7 +930,7 @@ function render() {
         const tx = Math.min(targets[k], targets[k + 1]);
         const sh = shape(tx, ys[k], ys[k + 1], limit);
         lefts.push(sh.left);
-        strokeStyle(styleOfB(b, k));
+        strokeStyle(stateOfB(b, k));
         strokeRange(sh.pieces, ys[k], ys[k + 1]);
         hstroke(tx, targets[k], ys[k]);
         hstroke(tx, targets[k + 1], ys[k + 1]);
