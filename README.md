@@ -1,3 +1,5 @@
+_Note: This is totally vibe-coded (Claude), and will continue to be. Use at your own risk._
+
 # Twig Arcs: Matching Tag & Branch Highlighting
 
 A PhpStorm plugin that shows the structure of Twig templates: which tags belong together, and which branch of an
