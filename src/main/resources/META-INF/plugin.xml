@@ -4,22 +4,39 @@
     <vendor url="https://github.com/donquixote">donquixote</vendor>
 
     <description><![CDATA[
-    Shows the Twig block structure next to the tags, like a tag tree for Twig:
+    <p>Highlights matching Twig tags and the branches of <code>{% if %}</code> / <code>{% elseif %}</code> /
+    <code>{% else %}</code>, so you can see at a glance where a block starts and ends and which code belongs
+    together. Made for long Twig templates, such as Drupal and Symfony themes.</p>
     <ul>
-      <li>a dotted curve left of each block's tags ({% if %}, {% for %}, {% block %}, ...), one per branch,
-          so if/else looks like an inverted "3";</li>
-      <li>around the caret: the current branch in green, the other branches in red with greyed-out content;</li>
-      <li>when the caret is on a Twig tag, the other tags of the same block are highlighted;</li>
-      <li>optional backgrounds for {% %}, {{ }} and {# #}.</li>
+      <li><b>Arcs for every block:</b> dotted curves connect the tags of each <code>if</code>, <code>for</code>,
+          <code>block</code>, <code>macro</code>, <code>embed</code> ... One arc per branch, so
+          if/elseif/else reads like an inverted "3". The arcs use the indentation and the gutter, and nest.</li>
+      <li><b>Branch highlighting:</b> put the caret in a branch and it turns green; the other branches of the same
+          block turn red and their content is greyed out.</li>
+      <li><b>Same condition elsewhere:</b> other <code>if</code> blocks with the same condition are decided too:
+          branches that cannot run together with the caret's line turn red, branches that are taken become green
+          (alternating with blue if it is unknown whether the code gets there). Respects <code>not</code>,
+          <code>{% set %}</code> and loop iterations.</li>
+      <li><b>Matching tag highlighting:</b> with the caret on a Twig tag, all tags of the same block are
+          highlighted, e.g. <code>{% if %}</code> with its <code>{% else %}</code> and <code>{% endif %}</code>.</li>
+      <li><b>Tag backgrounds:</b> a pale background on <code>{% %}</code> tags sets Twig logic apart from markup;
+          optional for <code>{{ }}</code> and <code>{# #}</code>.</li>
     </ul>
-    Colors: Settings | Editor | Color Scheme | Twig Arcs.
+    <p>All colors can be changed or turned off in <i>Settings | Editor | Color Scheme | Twig Arcs</i>.
+    Folding is not touched.</p>
     ]]></description>
+
+    <change-notes><![CDATA[
+    <p>0.1.0: first public release.</p>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.jetbrains.twig</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <editorFactoryListener implementation="io.github.donquixote.twigarcs.TwigArcsEditorListener"/>
+        <applicationConfigurable parentId="editor" id="io.github.donquixote.twigarcs"
+                                 instance="io.github.donquixote.twigarcs.TwigArcsConfigurable" displayName="Twig Arcs"/>
         <colorSettingsPage implementation="io.github.donquixote.twigarcs.TwigArcsColorSettingsPage"/>
         <additionalTextAttributes scheme="Default" file="colorSchemes/TwigArcsDefault.xml"/>
         <additionalTextAttributes scheme="Darcula" file="colorSchemes/TwigArcsDarcula.xml"/>

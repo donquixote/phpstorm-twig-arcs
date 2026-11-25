@@ -22,6 +22,11 @@ public final class TwigArcsEditorListener implements EditorFactoryListener {
 
     private static final Key<Disposable> DISPOSABLE_KEY = Key.create("io.github.donquixote.twigarcs.disposable");
 
+    /** The disposable of a Twig editor's listeners, or null for other editors. */
+    static @org.jetbrains.annotations.Nullable Disposable disposable(@NotNull Editor editor) {
+        return editor.getUserData(DISPOSABLE_KEY);
+    }
+
     @Override
     public void editorCreated(@NotNull EditorFactoryEvent event) {
         Editor editor = event.getEditor();

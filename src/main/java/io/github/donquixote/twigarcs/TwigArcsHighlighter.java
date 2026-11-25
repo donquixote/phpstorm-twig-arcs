@@ -7,6 +7,7 @@ import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.EditorFactory;
 import com.intellij.openapi.editor.LogicalPosition;
 import com.intellij.openapi.editor.colors.ColorKey;
 import com.intellij.openapi.editor.colors.TextAttributesKey;
@@ -28,7 +29,7 @@ import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.tree.IElementType;
 import com.intellij.util.concurrency.AppExecutorUtil;
-import com.intellij.util.ui.JBUI;
+import com.intellij.ui.scale.JBUIScale;
 import com.jetbrains.twig.TwigLanguage;
 import com.jetbrains.twig.TwigTokenTypes;
 import com.jetbrains.twig.elements.TwigElementTypes;
@@ -224,6 +225,18 @@ final class TwigArcsHighlighter {
     }
 
     private TwigArcsHighlighter() {
+    }
+
+    /** After a settings change: re-apply everything in all Twig editors. */
+    static void refreshAll() {
+        for (Editor editor : EditorFactory.getInstance().getAllEditors()) {
+            State state = editor.getUserData(STATE_KEY);
+            Disposable parent = TwigArcsEditorListener.disposable(editor);
+            if (state != null && parent != null) {
+                state.applied = null;
+                schedule(editor, parent);
+            }
+        }
     }
 
     static void schedule(@NotNull Editor editor, @NotNull Disposable parent) {
@@ -759,7 +772,17 @@ final class TwigArcsHighlighter {
     }
 
     /** Widens the gutter's left free painters area, so nested curves have room before the icon column. */
+    /** Set when the internal gutter API is missing or changed in this IDE version: fall back to the default width. */
+    private static volatile boolean reserveUnavailable;
+
+    /**
+     * Widens the gutter's left free area (setting "Widen the gutter", on by default). This is an internal platform API,
+     * so any linkage error turns it off for the session instead of breaking the plugin.
+     */
     private static void reserveWidth(Editor editor, State state, Disposable parent, int width) {
+        if (reserveUnavailable || !TwigArcsSettings.getInstance().isWidenGutter()) {
+            width = 0;
+        }
         if (width == state.reservedWidth || !(editor instanceof EditorEx ex)) {
             return;
         }
@@ -770,7 +793,14 @@ final class TwigArcsHighlighter {
         state.reservedWidth = width;
         if (width > 0) {
             Disposable reservation = Disposer.newDisposable(parent, "TwigArcs gutter width");
-            ex.getGutterComponentEx().reserveLeftFreePaintersAreaWidth(reservation, width);
+            try {
+                ex.getGutterComponentEx().reserveLeftFreePaintersAreaWidth(reservation, width);
+            } catch (LinkageError e) {
+                reserveUnavailable = true;
+                state.reservedWidth = 0;
+                Disposer.dispose(reservation);
+                return;
+            }
             state.widthReservation = reservation;
         }
     }
@@ -811,7 +841,7 @@ final class TwigArcsHighlighter {
         }
         Document doc = editor.getDocument();
         int textStart = editor.logicalPositionToXY(new LogicalPosition(0, 0)).x;
-        float gap = JBUI.scale((float) TAG_GAP);
+        float gap = JBUIScale.scale((float) TAG_GAP);
         List<Block> blocks = model.blocks();
         float[][] tagX = new float[blocks.size()][];
         for (int i = 0; i < blocks.size(); i++) {
@@ -847,9 +877,9 @@ final class TwigArcsHighlighter {
         }
         EditorGutterComponentEx gutter = ex.getGutterComponentEx();
         int gutterWidth = gutter.getWidth();
-        int areaX = state.leftAreaX >= 0 ? state.leftAreaX : gutter.getIconAreaOffset() - JBUI.scale(Math.max(0, state.reservedWidth));
-        float rootLimit = areaX - gutterWidth + JBUI.scale((float) PAD_LEFT);
-        float nestStep = JBUI.scale((float) NEST_STEP);
+        int areaX = state.leftAreaX >= 0 ? state.leftAreaX : gutter.getIconAreaOffset() - JBUIScale.scale(Math.max(0, state.reservedWidth));
+        float rootLimit = areaX - gutterWidth + JBUIScale.scale((float) PAD_LEFT);
+        float nestStep = JBUIScale.scale((float) NEST_STEP);
 
         Document doc = editor.getDocument();
         int lineCount = doc.getLineCount();
@@ -982,10 +1012,10 @@ final class TwigArcsHighlighter {
                 if (color == null) {
                     continue;
                 }
-                float dot = JBUI.scale(style.dot);
-                float period = dot + JBUI.scale(style.gap);
+                float dot = JBUIScale.scale(style.dot);
+                float period = dot + JBUIScale.scale(style.gap);
                 Color altColor = style.alternating ? editor.getColorsScheme().getColor(Style.DEFAULT.key) : null;
-                paintDots(g2, curve.path(), period, dot, color, JBUI.scale(Style.DEFAULT.dot), altColor);
+                paintDots(g2, curve.path(), period, dot, color, JBUIScale.scale(Style.DEFAULT.dot), altColor);
             }
         } finally {
             g2.dispose();

@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+
 plugins {
     id("java")
     id("org.jetbrains.intellij.platform")
@@ -28,6 +30,12 @@ intellijPlatform {
             untilBuild = provider { null }
         }
     }
-    // Not needed for a personal plugin, and it slows the build down a lot.
+    // Only useful for plugins with settings pages full of text; slows the build down a lot.
     buildSearchableOptions = false
+    // ./gradlew verifyPlugin: checks binary compatibility against real IDE builds (downloads them).
+    pluginVerification {
+        ides {
+            create(IntelliJPlatformType.PhpStorm, "2026.1.4")
+        }
+    }
 }

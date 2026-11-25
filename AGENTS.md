@@ -45,8 +45,11 @@ This plugin adds the Twig equivalent:
    branch are unreachable (all red). Matching condition texts get `MATCHED_CONDITION` (pale yellow by default).
    Conditions: text between tag name and `%}`, whitespace-normalized, outer parentheses removed; `not X` is a
    negation only if X is a single operand (Twig: `not a and b` = `(not a) and b`, kept opaque).
-6. A **color settings page** (Editor → Color Scheme → Twig Arcs) for all of the above. No other settings:
-   clearing an attribute in the color scheme turns that effect off.
+6. A **color settings page** (Editor → Color Scheme → Twig Arcs) for all of the above: clearing an attribute in
+   the color scheme turns that effect off.
+7. A **settings page** (Settings → Editor → Twig Arcs, `TwigArcsConfigurable` + `TwigArcsSettings`, stored in
+   `twigarcs.xml`) with one option: "Widen the gutter to fit nested arcs" (default on). It guards the only internal
+   API call; a `LinkageError` from it turns it off for the session (default gutter width).
 
 The look was designed in `prototype/index.html` (see below); the plugin implements one fixed configuration of it.
 
@@ -114,16 +117,15 @@ Reference implementation in the platform that this mirrors:
 
 ## Status
 
-- **Compiles** (`./gradlew buildPlugin` OK, 2026-11-23; output `build/distributions/twigarcs-0.1.0.zip`).
-  The only fix needed was the `intellijPlatform` extension import in `settings.gradle.kts`. **Not yet run in an IDE.**
-- Next steps:
-  1. ~~`./gradlew buildPlugin` and fix compile errors.~~ Done.
-  2. `./gradlew runIde` (or install the zip via Settings → Plugins → ⚙ → Install Plugin from Disk), open a Twig/Drupal template, verify: bars appear for nested if/for/block; matched tags highlight;
-     no exceptions in idea.log; no overlap with HTML tag tree bar or VCS markers.
-  3. Check block types: `if/elseif/else`, `for/else`, `block`, `macro`, `embed`, `apply`, `set ... endset`,
-     `with`, `autoescape`, `verbatim`, and Drupal's `trans`. If one is missed, inspect its PSI (Tools → View PSI Structure,
-     needs internal mode `-Didea.is.internal=true`) and adjust `toBlock()` / `isTag()`.
-  4. Check custom Twig syntax delimiters (Settings → PHP → Twig) still work (token-type based, should be fine).
+- Used daily by the user in PhpStorm 2026.1.4; preparing the first Marketplace release (0.1.0, MIT licence,
+  repo github.com/donquixote/twigarcs).
+- `./gradlew verifyPlugin` (against PS 2026.1.4): compatible, but fails on one internal + experimental API:
+  `EditorGutterComponentEx.reserveLeftFreePaintersAreaWidth` (widens the left gutter area for nested curves).
+  It is now behind a setting with a LinkageError fallback; the user is evaluating the difference. Decide before
+  publishing: keep it (and lower the verifier failure level) or drop it.
+- Untested block types: `macro`, `embed`, `apply`, `set ... endset`, `with`, `autoescape`, `verbatim`, Drupal
+  `trans`. If one is missed, inspect its PSI (Tools → View PSI Structure, internal mode `-Didea.is.internal=true`)
+  and adjust `toBlock()` / `isTag()`.
 
 ## Possible future features (discussed, not implemented)
 
@@ -140,6 +142,8 @@ Reference implementation in the platform that this mirrors:
 - `src/main/java/io/github/donquixote/twigarcs/TwigArcsColorSettingsPage.java`: color settings page.
 - `src/main/resources/META-INF/plugin.xml`: registration; depends on `com.jetbrains.twig`.
 - `src/main/resources/colorSchemes/TwigArcs{Default,Darcula}.xml`: default {% %} background per scheme.
+- `src/main/resources/META-INF/pluginIcon.svg`: Marketplace / plugin list icon (40×40).
+- `LICENSE`: MIT.
 - `prototype/index.html`: standalone browser mockup (canvas) of the editor + gutter for trying visual designs
   cheaply before porting them to the plugin. Has live settings and exports them as JSON. Its parser mimics the
   plugin's block rules with regexes. Not part of the plugin build.
